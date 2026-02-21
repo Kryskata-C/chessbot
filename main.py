@@ -25,7 +25,7 @@ from piece_recognizer import (
     reload_templates,
 )
 from engine import ChessEngine
-from overlay import OverlayWindow
+from overlay import OverlayWindow, MenuWindow
 
 SCAN_INTERVAL_MS = 500
 
@@ -40,15 +40,32 @@ class ChessVision:
     def __init__(self):
         self.engine = ChessEngine(depth=12, threads=2)
         self.overlay = OverlayWindow()
+        self.menu = MenuWindow()
         self.last_fen_position: str | None = None
         self.last_move: str | None = None
         self.player_color: str | None = None  # "w" or "b"
+        self.current_turn: str = "w"  # white always moves first
         self.running = True
         self.has_templates = len(get_templates()) > 0
+        self.scan_timer: QTimer | None = None
+        # Position stability: require same FEN for 2 scans before accepting
+        self._pending_fen: str | None = None
+        self._pending_count: int = 0
+        self._STABLE_SCANS = 2
+
+        # Wire up menu → start
+        self.menu.color_selected.connect(self._on_color_selected)
+
+    def _on_color_selected(self, color: str):
+        """Called when the user picks a color and clicks Start."""
+        self.player_color = color
+        self.current_turn = "w"  # white always moves first
+        color_name = "White" if color == "w" else "Black"
+        print(f"Playing as: {color_name}")
 
         if self.has_templates:
             self.overlay.set_status(
-                f"Chess Vision ready  ({len(get_templates())} templates loaded)",
+                f"Playing as {color_name}  ({len(get_templates())} templates)",
                 GREEN, duration_ms=3000,
             )
         else:
@@ -56,6 +73,12 @@ class ChessVision:
                 "No templates — looking for board to auto-calibrate...",
                 ORANGE,
             )
+
+        # Show overlay and start scanning now
+        self.overlay.show()
+        self.scan_timer = QTimer()
+        self.scan_timer.timeout.connect(self.scan)
+        self.scan_timer.start(SCAN_INTERVAL_MS)
 
     def auto_calibrate(self, screenshot, board):
         """Try to extract templates from a starting-position board."""
@@ -135,24 +158,35 @@ class ChessVision:
             positions = recognize_board(screenshot, board)
             white_on_bottom = detect_orientation(positions)
 
-            # Detect player color once from board orientation (your pieces on bottom)
-            if self.player_color is None:
-                self.player_color = "w" if white_on_bottom else "b"
-                color_name = "White" if self.player_color == "w" else "Black"
-                print(f"Playing as: {color_name}")
-                self.overlay.set_status(
-                    f"Playing as {color_name}", GREEN, duration_ms=3000
-                )
-
             piece_count = sum(
                 1 for row in positions for p in row if p is not None
             )
 
             fen_position = positions_to_fen(positions, "w").split(" ")[0]
 
-            # Only re-analyze if position changed
+            # No change from accepted position — nothing to do
             if fen_position == self.last_fen_position:
+                self._pending_fen = None
+                self._pending_count = 0
                 return
+
+            # Position differs — require it to be stable before accepting
+            if fen_position == self._pending_fen:
+                self._pending_count += 1
+            else:
+                self._pending_fen = fen_position
+                self._pending_count = 1
+
+            if self._pending_count < self._STABLE_SCANS:
+                return  # wait for position to stabilize
+
+            # Position is stable — accept it
+            self._pending_fen = None
+            self._pending_count = 0
+
+            # Toggle turn (but not on first detection)
+            if self.last_fen_position is not None:
+                self.current_turn = "b" if self.current_turn == "w" else "w"
 
             self.last_fen_position = fen_position
 
@@ -164,17 +198,22 @@ class ChessVision:
                 self.overlay.clear_highlights()
                 return
 
-            # Always try to analyze for the player's color
+            # Skip analysis on opponent's turn
+            if self.current_turn != self.player_color:
+                color_name = "White" if self.player_color == "w" else "Black"
+                self.overlay.set_status(
+                    f"Opponent's turn (you are {color_name})", BLUE
+                )
+                self.overlay.clear_highlights()
+                return
+
+            # Analyze for the player's turn
             fen = f"{fen_position} {self.player_color} KQkq - 0 1"
             print(f"FEN: {fen}  ({piece_count} pieces)")
 
             best_move = self.engine.get_best_move(fen)
             if best_move is None:
-                # Can't find a move for player — probably opponent's turn
-                color_name = "White" if self.player_color == "w" else "Black"
-                self.overlay.set_status(
-                    f"Opponent's turn (you are {color_name})", BLUE
-                )
+                self.overlay.set_status("No legal moves found", ORANGE)
                 self.overlay.clear_highlights()
                 return
 
@@ -205,17 +244,12 @@ def main():
     app = QApplication(sys.argv)
     vision = ChessVision()
 
-    vision.overlay.show()
-
-    timer = QTimer()
-    timer.timeout.connect(vision.scan)
-    timer.start(SCAN_INTERVAL_MS)
+    vision.menu.show()  # show menu first; overlay + scanning starts after color is chosen
 
     quit_shortcut = QShortcut(QKeySequence("Ctrl+Q"), vision.overlay)
     quit_shortcut.activated.connect(vision.stop)
 
-    print("Chess Vision started!")
-    print(f"Scanning every {SCAN_INTERVAL_MS/1000:.1f}s")
+    print("Chess Vision — select your color and click Start.")
     print("Press Ctrl+Q to quit, or Ctrl+C in terminal.")
     print()
 

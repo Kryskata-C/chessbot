@@ -6,9 +6,117 @@ import sys
 import ctypes
 import ctypes.util
 from typing import Optional
-from PyQt6.QtCore import Qt, QRect, QTimer
+from PyQt6.QtCore import Qt, QRect, QTimer, pyqtSignal, QPoint
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont
-from PyQt6.QtWidgets import QWidget, QApplication
+from PyQt6.QtWidgets import (
+    QWidget, QApplication, QDialog, QVBoxLayout, QHBoxLayout,
+    QComboBox, QPushButton, QLabel,
+)
+
+
+class MenuWindow(QDialog):
+    """Startup menu for selecting player color."""
+
+    color_selected = pyqtSignal(str)  # emits "w" or "b"
+
+    def __init__(self):
+        super().__init__()
+        self._drag_pos: Optional[QPoint] = None
+        self.setWindowTitle("Chess Vision")
+        self.setFixedSize(260, 160)
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+
+        # Dark theme stylesheet
+        self.setStyleSheet("""
+            QDialog {
+                background: #1e1e1e;
+                border: 1px solid #444;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #e0e0e0;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QComboBox {
+                background: #2d2d2d;
+                color: #e0e0e0;
+                border: 1px solid #555;
+                border-radius: 5px;
+                padding: 6px 12px;
+                font-size: 14px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox QAbstractItemView {
+                background: #2d2d2d;
+                color: #e0e0e0;
+                selection-background-color: #3a7bd5;
+            }
+            QPushButton {
+                background: #3a7bd5;
+                color: white;
+                border: none;
+                border-radius: 5px;
+                padding: 8px 24px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #4a8be5;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(14)
+
+        title = QLabel("Chess Vision")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        row = QHBoxLayout()
+        label = QLabel("Play as:")
+        label.setStyleSheet("font-size: 14px; font-weight: normal;")
+        self.combo = QComboBox()
+        self.combo.addItems(["White", "Black"])
+        row.addWidget(label)
+        row.addWidget(self.combo)
+        layout.addLayout(row)
+
+        self.start_btn = QPushButton("Start")
+        self.start_btn.clicked.connect(self._on_start)
+        layout.addWidget(self.start_btn)
+
+        # Center on screen
+        screen = QApplication.primaryScreen()
+        if screen:
+            geo = screen.geometry()
+            self.move(
+                geo.center().x() - self.width() // 2,
+                geo.center().y() - self.height() // 2,
+            )
+
+    def _on_start(self):
+        color = "w" if self.combo.currentIndex() == 0 else "b"
+        self.color_selected.emit(color)
+        self.hide()
+
+    # --- draggable window ---
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.pos()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
 
 
 class OverlayWindow(QWidget):
