@@ -175,6 +175,27 @@ No focus stealing, no cursor grabbing — completely invisible to interaction.
 
 ---
 
+## Roadmap
+
+Planned features for future versions:
+
+- **Full GUI menu** — Settings panel to configure engine depth, scan speed, overlay colors, and keybinds without touching code
+- **Opponent analysis** — Track opponent's patterns, opening preferences, blunder tendencies, and time management across games
+- **Human-like play mode** — A realistic bot that mimics human behavior:
+  - Adjusts strength to match the opponent's rating
+  - Wins by small margins instead of crushing — makes it look natural
+  - Can stage convincing losses (miss a tactic, blunder in time pressure)
+  - Varies move timing to simulate human thinking patterns
+  - Avoids engine-like moves that look suspicious (e.g. deep sacrifices a human wouldn't find)
+- **Adaptive strategy** — Dynamically adjusts playstyle based on the opponent:
+  - Plays more aggressively against passive opponents
+  - Simplifies positions against tactical players
+  - Targets weaknesses detected from opponent analysis
+- **Multi-platform support** — Windows and Linux overlay implementations
+- **Opening book integration** — Use popular openings instead of engine moves in the first 10-15 moves for more natural play
+
+---
+
 ## Tech Stack
 
 - **[mss](https://github.com/BoboTiG/python-mss)** — Fast cross-platform screen capture
