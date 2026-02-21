@@ -1,0 +1,6 @@
+mss
+opencv-python
+numpy
+python-chess
+stockfish
+PyQt6
