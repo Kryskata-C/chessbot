@@ -27,7 +27,7 @@ from piece_recognizer import (
 from engine import ChessEngine
 from overlay import OverlayWindow, MenuWindow
 
-SCAN_INTERVAL_MS = 500
+SCAN_INTERVAL_MS = 200
 
 # Status colors
 BLUE = QColor(0, 120, 255)
@@ -131,6 +131,53 @@ class ChessVision:
         except Exception:
             return False
 
+    def _infer_current_turn(self, old_fen_pos: str, new_fen_pos: str) -> str | None:
+        """Infer whose turn it is by comparing old and new piece positions.
+
+        Looks at which color's pieces appeared on new squares to determine
+        who just moved. Returns the color whose turn it is NOW.
+        """
+        old_rows = old_fen_pos.split("/")
+        new_rows = new_fen_pos.split("/")
+        if len(old_rows) != 8 or len(new_rows) != 8:
+            return None
+
+        def expand(row_str):
+            out = []
+            for ch in row_str:
+                if ch.isdigit():
+                    out.extend([None] * int(ch))
+                else:
+                    out.append(ch)
+            return (out + [None] * 8)[:8]
+
+        changed = 0
+        white_arrived = 0
+        black_arrived = 0
+
+        for r in range(8):
+            old_rank = expand(old_rows[r])
+            new_rank = expand(new_rows[r])
+            for c in range(8):
+                if old_rank[c] != new_rank[c]:
+                    changed += 1
+                    if new_rank[c] is not None:
+                        if new_rank[c].isupper():
+                            white_arrived += 1
+                        else:
+                            black_arrived += 1
+
+        # Too many changes = recognition noise, not a real move
+        if changed > 6:
+            return None
+
+        if white_arrived > black_arrived:
+            return "b"  # white moved -> black's turn
+        elif black_arrived > white_arrived:
+            return "w"  # black moved -> white's turn
+
+        return None
+
     def scan(self):
         """One scan cycle: capture -> detect -> recognize -> analyze -> highlight."""
         if not self.running:
@@ -170,7 +217,10 @@ class ChessVision:
                 self._pending_count = 0
                 return
 
-            # Position differs — require it to be stable before accepting
+            # Position changed — immediately clear highlights for instant feedback
+            self.overlay.clear_highlights()
+
+            # Require position to be stable before accepting
             if fen_position == self._pending_fen:
                 self._pending_count += 1
             else:
@@ -184,9 +234,28 @@ class ChessVision:
             self._pending_fen = None
             self._pending_count = 0
 
-            # Toggle turn (but not on first detection)
+            # Determine whose turn it is by analyzing what changed
             if self.last_fen_position is not None:
-                self.current_turn = "b" if self.current_turn == "w" else "w"
+                inferred = self._infer_current_turn(
+                    self.last_fen_position, fen_position
+                )
+                if inferred is not None:
+                    self.current_turn = inferred
+                else:
+                    # Fallback: validate both turns with chess rules
+                    toggled = "b" if self.current_turn == "w" else "w"
+                    picked = toggled
+                    for candidate in [toggled, self.current_turn]:
+                        try:
+                            b = chess.Board(
+                                f"{fen_position} {candidate} KQkq - 0 1"
+                            )
+                            if b.is_valid():
+                                picked = candidate
+                                break
+                        except Exception:
+                            pass
+                    self.current_turn = picked
 
             self.last_fen_position = fen_position
 
