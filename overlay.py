@@ -137,9 +137,11 @@ class DebugBoardWindow(QWidget):
         self.white_on_bottom: bool = True
         self.turn: str = "w"
         self.piece_count: int = 0
+        self.estimated_elo: int | None = None
+        self.opponent_acpl: float | None = None
 
         size = self.SQUARE_PX * 8 + 40  # board + margins for labels
-        self.setFixedSize(size, size + 28)  # extra space for info text
+        self.setFixedSize(size, size + 50)  # extra space for info text + ELO line
         self.setWindowTitle("Debug Board")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -154,11 +156,15 @@ class DebugBoardWindow(QWidget):
             self.move(geo.width() - self.width() - 20, 80)
 
     def set_positions(self, positions: list[list[str | None]],
-                      white_on_bottom: bool, turn: str, piece_count: int):
+                      white_on_bottom: bool, turn: str, piece_count: int,
+                      estimated_elo: int | None = None,
+                      opponent_acpl: float | None = None):
         self.positions = positions
         self.white_on_bottom = white_on_bottom
         self.turn = turn
         self.piece_count = piece_count
+        self.estimated_elo = estimated_elo
+        self.opponent_acpl = opponent_acpl
         self.update()
 
     def paintEvent(self, event):
@@ -220,6 +226,18 @@ class DebugBoardWindow(QWidget):
         painter.setPen(QColor(200, 200, 200))
         info_y = margin + 8 * sq + 24
         painter.drawText(margin, info_y, info)
+
+        # ELO estimate line
+        elo_font = QFont("Helvetica Neue", 9)
+        painter.setFont(elo_font)
+        painter.setPen(QColor(230, 168, 23))  # gold/amber
+        elo_y = info_y + 18
+        if self.estimated_elo is not None:
+            acpl_str = f" (ACPL: {self.opponent_acpl:.0f})" if self.opponent_acpl is not None else ""
+            elo_text = f"Est. opponent ELO: ~{self.estimated_elo}{acpl_str}"
+        else:
+            elo_text = "Est. ELO: analyzing..."
+        painter.drawText(margin, elo_y, elo_text)
 
         painter.end()
 
