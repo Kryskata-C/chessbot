@@ -36,6 +36,44 @@ ORANGE = QColor(230, 140, 0)
 RED = QColor(220, 40, 40)
 
 
+def infer_castling(fen_position: str) -> str:
+    """Infer castling rights from piece placement.
+
+    Only grant castling if the king and rook are on their starting squares.
+    """
+    rows = fen_position.split("/")
+    if len(rows) != 8:
+        return "-"
+
+    def expand(row_str):
+        out = []
+        for ch in row_str:
+            if ch.isdigit():
+                out.extend([None] * int(ch))
+            else:
+                out.append(ch)
+        return (out + [None] * 8)[:8]
+
+    rank1 = expand(rows[7])  # white's back rank
+    rank8 = expand(rows[0])  # black's back rank
+
+    rights = ""
+    # White king on e1 (col 4)
+    if rank1[4] == "K":
+        if rank1[7] == "R":  # h1 rook
+            rights += "K"
+        if rank1[0] == "R":  # a1 rook
+            rights += "Q"
+    # Black king on e8 (col 4)
+    if rank8[4] == "k":
+        if rank8[7] == "r":  # h8 rook
+            rights += "k"
+        if rank8[0] == "r":  # a8 rook
+            rights += "q"
+
+    return rights if rights else "-"
+
+
 class ChessVision:
     def __init__(self):
         self.engine = ChessEngine(depth=12, threads=2)
@@ -137,7 +175,8 @@ class ChessVision:
     def _is_valid_for_turn(self, fen_position: str, turn: str) -> bool:
         """Check if a position is valid for the given turn."""
         try:
-            b = chess.Board(f"{fen_position} {turn} KQkq - 0 1")
+            castling = infer_castling(fen_position)
+            b = chess.Board(f"{fen_position} {turn} {castling} - 0 1")
             return b.is_valid() and bool(list(b.legal_moves))
         except Exception:
             return False
@@ -275,8 +314,9 @@ class ChessVision:
                     picked = toggled
                     for candidate in [toggled, self.current_turn]:
                         try:
+                            castling = infer_castling(fen_position)
                             b = chess.Board(
-                                f"{fen_position} {candidate} KQkq - 0 1"
+                                f"{fen_position} {candidate} {castling} - 0 1"
                             )
                             if b.is_valid():
                                 picked = candidate
@@ -310,7 +350,8 @@ class ChessVision:
                 return
 
             # Analyze for the player's turn
-            fen = f"{fen_position} {self.player_color} KQkq - 0 1"
+            castling = infer_castling(fen_position)
+            fen = f"{fen_position} {self.player_color} {castling} - 0 1"
             print(f"FEN: {fen}  ({piece_count} pieces)")
 
             best_move = self.engine.get_best_move(fen)
