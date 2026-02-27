@@ -58,12 +58,8 @@ def detect_board(screenshot: np.ndarray) -> dict | None:
         return None
 
     x, y, w, h = best
-    # Make it exactly square, centering the shorter dimension
+    # Make it exactly square
     size = max(w, h)
-    if w < size:
-        x -= (size - w) // 2
-    if h < size:
-        y -= (size - h) // 2
     square_size = size / 8
 
     return {
