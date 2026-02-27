@@ -1,21 +1,33 @@
-MIT License
+Chess Vision - Proprietary License
 
-Copyright (c) 2026 Kryskata-C
+Copyright (c) 2026 Kryskata-C. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This software and its source code are the exclusive property of the copyright
+holder. The source code is made publicly visible for educational and reference
+purposes only.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+You MAY:
+  - View and read the source code
+  - Fork the repository for personal, non-commercial experimentation only
+  - Reference small snippets (under 20 lines) for educational purposes with
+    proper attribution to the original author
+
+You MAY NOT:
+  - Copy, reproduce, or redistribute this software or any substantial portion
+    of its source code
+  - Modify and distribute derivative works based on this software
+  - Use this software or its source code for any commercial purpose
+  - Sell, sublicense, or otherwise monetize this software in any form
+  - Claim authorship or ownership of this software or any part of it
+  - Publish or redistribute modified or unmodified copies under any name
+  - Use this software as part of another product, tool, or service
+
+Any unauthorized use, reproduction, or distribution of this software is
+strictly prohibited and may result in legal action.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+IMPLIED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR
+OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
+
+For licensing inquiries, contact the copyright holder via GitHub:
+https://github.com/Kryskata-C

@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/Python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white"/>
   <img src="https://img.shields.io/badge/macOS-Sonoma%2B-000000?style=for-the-badge&logo=apple&logoColor=white"/>
   <img src="https://img.shields.io/badge/Engine-Stockfish-47a341?style=for-the-badge"/>
-  <img src="https://img.shields.io/badge/License-MIT-f7b731?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/License-Proprietary-f7b731?style=for-the-badge"/>
 </p>
 
 ---
@@ -214,4 +214,4 @@ Planned features for future versions:
 
 ## License
 
-MIT
+Proprietary — all rights reserved. Source code is visible for educational purposes only. See [LICENSE](LICENSE) for details.
