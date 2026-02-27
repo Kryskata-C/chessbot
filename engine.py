@@ -45,6 +45,28 @@ class ChessEngine:
             print(f"Engine error: {e}")
             return None
 
+    def get_top_moves(self, fen: str, n: int = 5) -> list[dict]:
+        """Get the top N moves with evaluations for the given position.
+
+        Returns:
+            List of {'move': str, 'eval': int} sorted best-first.
+            Eval is centipawns from side-to-move POV.
+        """
+        try:
+            self.engine.set_fen_position(fen)
+            raw = self.engine.get_top_moves(n)
+            result = []
+            for m in raw:
+                if m.get("Mate") is not None:
+                    eval_cp = 100000 if m["Mate"] > 0 else -100000
+                else:
+                    eval_cp = m.get("Centipawn", 0)
+                result.append({"move": m["Move"], "eval": eval_cp})
+            return result
+        except Exception as e:
+            print(f"Top moves error: {e}")
+            return []
+
     def get_evaluation(self, fen: str, depth: int = 10) -> int:
         """Evaluate a position and return score in centipawns from side-to-move POV.
 
