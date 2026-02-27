@@ -217,8 +217,8 @@ class ChessVision:
                 self._pending_count = 0
                 return
 
-            # Position changed — immediately clear highlights for instant feedback
-            self.overlay.clear_highlights()
+            # Position changed — keep old highlights visible until new ones
+            # are ready, instead of clearing them eagerly which causes flicker.
 
             # Require position to be stable before accepting
             if fen_position == self._pending_fen:
