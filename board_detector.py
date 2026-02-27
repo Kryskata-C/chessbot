@@ -83,6 +83,6 @@ def get_square_coords(board: dict, row: int, col: int) -> tuple[int, int, int, i
         (x, y, w, h) pixel coordinates.
     """
     sq = board["square_size"]
-    x = int(board["x"] + col * sq)
-    y = int(board["y"] + row * sq)
-    return x, y, int(sq), int(sq)
+    x = round(board["x"] + col * sq)
+    y = round(board["y"] + row * sq)
+    return x, y, round(sq), round(sq)

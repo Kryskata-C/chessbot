@@ -83,15 +83,15 @@ class ChessEngine:
         bx, by = board["x"], board["y"]
 
         from_rect = {
-            "x": int(bx + from_col * sq),
-            "y": int(by + from_row * sq),
-            "w": int(sq),
-            "h": int(sq),
+            "x": round(bx + from_col * sq),
+            "y": round(by + from_row * sq),
+            "w": round(sq),
+            "h": round(sq),
         }
         to_rect = {
-            "x": int(bx + to_col * sq),
-            "y": int(by + to_row * sq),
-            "w": int(sq),
-            "h": int(sq),
+            "x": round(bx + to_col * sq),
+            "y": round(by + to_row * sq),
+            "w": round(sq),
+            "h": round(sq),
         }
         return from_rect, to_rect
