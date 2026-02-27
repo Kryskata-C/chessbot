@@ -1,24 +1,31 @@
-# Chess Vision
+<p align="center">
+  <img src="assets/banner.svg" alt="Chess Vision" width="100%"/>
+</p>
 
-**Real-time chess move assistant that watches your screen, detects the board, recognizes pieces, and highlights the best move using Stockfish.**
+<p align="center">
+  <strong>Real-time chess move assistant that watches your screen, detects the board, recognizes pieces, and highlights the best move using Stockfish.</strong>
+</p>
 
-Built for chess.com — works as a transparent overlay on macOS that stays on top of everything and lets clicks pass through.
+<p align="center">
+  Built for chess.com — works as a transparent overlay on macOS that stays on top of everything and lets clicks pass through.
+</p>
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
-![macOS](https://img.shields.io/badge/macOS-Sonoma%2B-black?logo=apple&logoColor=white)
-![Stockfish](https://img.shields.io/badge/Engine-Stockfish-green)
-![License](https://img.shields.io/badge/License-MIT-yellow)
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white"/>
+  <img src="https://img.shields.io/badge/macOS-Sonoma%2B-000000?style=for-the-badge&logo=apple&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Engine-Stockfish-47a341?style=for-the-badge"/>
+  <img src="https://img.shields.io/badge/License-MIT-f7b731?style=for-the-badge"/>
+</p>
 
 ---
 
 ## How It Works
 
-```
-Screen Capture  →  Board Detection  →  Piece Recognition  →  Stockfish Analysis  →  Overlay
-    (mss)           (OpenCV HSV)       (Template Match)       (depth 12)          (PyQt6)
-```
+<p align="center">
+  <img src="assets/architecture.svg" alt="Architecture" width="100%"/>
+</p>
 
-1. **Captures** your screen every 500ms
+1. **Captures** your screen every 200ms
 2. **Detects** the chess.com board by matching green/beige square colors in HSV space
 3. **Recognizes** all pieces using template matching (light + dark square variants)
 4. **Detects your color** automatically — your pieces are always on the bottom
@@ -29,12 +36,11 @@ The overlay is click-through — you interact with chess.com normally underneath
 
 ---
 
-## Screenshots
+## Features
 
-| Move Suggestion | Status Banner |
-|---|---|
-| Red square = piece to move | Green banner = your turn |
-| Green square = destination | Blue banner = opponent's turn |
+<p align="center">
+  <img src="assets/features.svg" alt="Features" width="100%"/>
+</p>
 
 ---
 
@@ -73,7 +79,7 @@ Go to **System Settings → Privacy & Security → Screen Recording** and enable
 Open chess.com in your browser with a game at the **starting position** (standard green/beige theme), then run:
 
 ```bash
-python calibrate.py
+python3 calibrate.py
 ```
 
 This extracts piece templates from the visible board. Templates are saved to `templates/` and only need to be captured once per display/theme.
@@ -83,7 +89,7 @@ This extracts piece templates from the visible board. Templates are saved to `te
 ### Run the assistant
 
 ```bash
-python main.py
+python3 main.py
 ```
 
 You'll see a status banner at the top of your screen:
@@ -127,7 +133,7 @@ chessbot/
 Edit the constants at the top of `main.py`:
 
 ```python
-SCAN_INTERVAL_MS = 500   # How often to scan (ms)
+SCAN_INTERVAL_MS = 200   # How often to scan (ms)
 ```
 
 Edit `engine.py` constructor for Stockfish settings:
@@ -165,7 +171,7 @@ No focus stealing, no cursor grabbing — completely invisible to interaction.
 - Check that screen recording permission is granted
 
 **Poor piece recognition**
-- Re-run `python calibrate.py` with the starting position visible
+- Re-run `python3 calibrate.py` with the starting position visible
 - Make sure no popups or overlays are covering the board during calibration
 - Each template needs both light and dark square variants — `recalibrate.py` handles this
 
