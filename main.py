@@ -90,6 +90,7 @@ class ChessVision:
 
         os.makedirs(TEMPLATE_DIR, exist_ok=True)
         sq = board["square_size"]
+        img_h, img_w = screenshot.shape[:2]
         saved = 0
         seen_light = set()
         seen_dark = set()
@@ -105,9 +106,14 @@ class ChessVision:
                     continue
                 seen.add(piece_name)
 
-                x = int(board["x"] + col * sq)
-                y = int(board["y"] + row * sq)
-                w, h = int(sq), int(sq)
+                x = round(board["x"] + col * sq)
+                y = round(board["y"] + row * sq)
+                w, h = round(sq), round(sq)
+                # Clamp to image bounds
+                x = max(0, min(x, img_w - 1))
+                y = max(0, min(y, img_h - 1))
+                w = min(w, img_w - x)
+                h = min(h, img_h - y)
                 square_img = screenshot[y : y + h, x : x + w]
                 if square_img.size == 0:
                     continue
