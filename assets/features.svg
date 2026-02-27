@@ -1,0 +1,155 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 220" width="900" height="220">
+  <defs>
+    <linearGradient id="featBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1117"/>
+      <stop offset="100%" style="stop-color:#161b22"/>
+    </linearGradient>
+    <linearGradient id="card1Bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a2740"/>
+      <stop offset="100%" style="stop-color:#131d30"/>
+    </linearGradient>
+    <linearGradient id="card2Bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a3028"/>
+      <stop offset="100%" style="stop-color:#132418"/>
+    </linearGradient>
+    <linearGradient id="card3Bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#2a1a3a"/>
+      <stop offset="100%" style="stop-color:#1f1230"/>
+    </linearGradient>
+    <linearGradient id="card4Bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#302818"/>
+      <stop offset="100%" style="stop-color:#252010"/>
+    </linearGradient>
+  </defs>
+
+  <style>
+    @keyframes iconFloat {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-3px); }
+    }
+    @keyframes cardShine {
+      0%, 100% { opacity: 0; }
+      50% { opacity: 0.08; }
+    }
+    @keyframes dotPulse {
+      0%, 100% { r: 3; opacity: 0.5; }
+      50% { r: 4; opacity: 1; }
+    }
+    .icon-float { animation: iconFloat 3s ease-in-out infinite; }
+    .icon-float-d1 { animation: iconFloat 3s ease-in-out 0.5s infinite; }
+    .icon-float-d2 { animation: iconFloat 3s ease-in-out 1s infinite; }
+    .icon-float-d3 { animation: iconFloat 3s ease-in-out 1.5s infinite; }
+    .card-shine { animation: cardShine 4s ease-in-out infinite; }
+    .dot-pulse { animation: dotPulse 2s ease-in-out infinite; }
+    .dot-pulse-d1 { animation: dotPulse 2s ease-in-out 0.5s infinite; }
+    .dot-pulse-d2 { animation: dotPulse 2s ease-in-out 1s infinite; }
+    .dot-pulse-d3 { animation: dotPulse 2s ease-in-out 1.5s infinite; }
+  </style>
+
+  <!-- Background -->
+  <rect width="900" height="220" fill="url(#featBg)" rx="12"/>
+  <rect width="898" height="218" x="1" y="1" fill="none" stroke="#30363d" stroke-width="1" rx="11"/>
+
+  <!-- Card 1: Click-through Overlay -->
+  <g transform="translate(24, 20)">
+    <rect width="198" height="180" rx="10" fill="url(#card1Bg)" stroke="#30363d" stroke-width="1"/>
+    <!-- Shine effect -->
+    <rect width="198" height="180" rx="10" fill="#58a6ff" class="card-shine"/>
+
+    <!-- Cursor/click-through icon -->
+    <g transform="translate(99, 55)" class="icon-float">
+      <!-- Pointer arrow -->
+      <path d="M-6,-16 L-6,6 L-1,1 L5,10 L9,8 L3,-1 L10,-1 Z" fill="none" stroke="#58a6ff" stroke-width="2" stroke-linejoin="round"/>
+      <!-- Pass-through circle -->
+      <circle cx="8" cy="-8" r="8" fill="none" stroke="#58a6ff" stroke-width="1.5" stroke-dasharray="3 2" opacity="0.6"/>
+    </g>
+
+    <!-- Status dot -->
+    <circle cx="99" cy="90" r="3" fill="#58a6ff" class="dot-pulse"/>
+
+    <text x="99" y="115" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="600" fill="#e6edf3">Click-through</text>
+    <text x="99" y="133" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="600" fill="#e6edf3">Overlay</text>
+    <text x="99" y="158" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#8b949e">Invisible to interaction</text>
+    <text x="99" y="173" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#8b949e">always on top</text>
+  </g>
+
+  <!-- Card 2: Auto Calibration -->
+  <g transform="translate(240, 20)">
+    <rect width="198" height="180" rx="10" fill="url(#card2Bg)" stroke="#30363d" stroke-width="1"/>
+    <rect width="198" height="180" rx="10" fill="#7ee787" class="card-shine"/>
+
+    <!-- Target/calibrate icon -->
+    <g transform="translate(99, 55)" class="icon-float-d1">
+      <circle cx="0" cy="0" r="14" fill="none" stroke="#7ee787" stroke-width="2"/>
+      <circle cx="0" cy="0" r="7" fill="none" stroke="#7ee787" stroke-width="1.5"/>
+      <circle cx="0" cy="0" r="2" fill="#7ee787"/>
+      <line x1="0" y1="-18" x2="0" y2="-11" stroke="#7ee787" stroke-width="1.5"/>
+      <line x1="0" y1="11" x2="0" y2="18" stroke="#7ee787" stroke-width="1.5"/>
+      <line x1="-18" y1="0" x2="-11" y2="0" stroke="#7ee787" stroke-width="1.5"/>
+      <line x1="11" y1="0" x2="18" y2="0" stroke="#7ee787" stroke-width="1.5"/>
+    </g>
+
+    <circle cx="99" cy="90" r="3" fill="#7ee787" class="dot-pulse-d1"/>
+
+    <text x="99" y="115" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="600" fill="#e6edf3">Auto</text>
+    <text x="99" y="133" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="600" fill="#e6edf3">Calibration</text>
+    <text x="99" y="158" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#8b949e">Detects board and pieces</text>
+    <text x="99" y="173" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#8b949e">from starting position</text>
+  </g>
+
+  <!-- Card 3: Real-time Scanning -->
+  <g transform="translate(456, 20)">
+    <rect width="198" height="180" rx="10" fill="url(#card3Bg)" stroke="#30363d" stroke-width="1"/>
+    <rect width="198" height="180" rx="10" fill="#d2a8ff" class="card-shine"/>
+
+    <!-- Scan/radar icon -->
+    <g transform="translate(99, 55)" class="icon-float-d2">
+      <!-- Clock-like circle -->
+      <circle cx="0" cy="0" r="14" fill="none" stroke="#d2a8ff" stroke-width="2"/>
+      <!-- Sweep -->
+      <path d="M0,0 L0,-14" stroke="#d2a8ff" stroke-width="2"/>
+      <path d="M0,0 L10,-10" stroke="#d2a8ff" stroke-width="1.5" opacity="0.6"/>
+      <!-- Speed lines -->
+      <path d="M14,3 L18,3" stroke="#d2a8ff" stroke-width="1.5" opacity="0.4"/>
+      <path d="M13,7 L17,9" stroke="#d2a8ff" stroke-width="1.5" opacity="0.3"/>
+    </g>
+
+    <circle cx="99" cy="90" r="3" fill="#d2a8ff" class="dot-pulse-d2"/>
+
+    <text x="99" y="115" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="600" fill="#e6edf3">Real-time</text>
+    <text x="99" y="133" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="600" fill="#e6edf3">Scanning</text>
+    <text x="99" y="158" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#8b949e">200ms scan interval</text>
+    <text x="99" y="173" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#8b949e">instant move detection</text>
+  </g>
+
+  <!-- Card 4: Debug Board -->
+  <g transform="translate(672, 20)">
+    <rect width="198" height="180" rx="10" fill="url(#card4Bg)" stroke="#30363d" stroke-width="1"/>
+    <rect width="198" height="180" rx="10" fill="#ffa657" class="card-shine"/>
+
+    <!-- Debug/bug icon -->
+    <g transform="translate(99, 55)" class="icon-float-d3">
+      <!-- Bug body -->
+      <ellipse cx="0" cy="0" rx="8" ry="12" fill="none" stroke="#ffa657" stroke-width="2"/>
+      <!-- Head -->
+      <circle cx="0" cy="-14" r="5" fill="none" stroke="#ffa657" stroke-width="1.5"/>
+      <!-- Antennae -->
+      <line x1="-3" y1="-18" x2="-7" y2="-24" stroke="#ffa657" stroke-width="1.5"/>
+      <line x1="3" y1="-18" x2="7" y2="-24" stroke="#ffa657" stroke-width="1.5"/>
+      <!-- Legs -->
+      <line x1="-8" y1="-4" x2="-15" y2="-8" stroke="#ffa657" stroke-width="1.5"/>
+      <line x1="8" y1="-4" x2="15" y2="-8" stroke="#ffa657" stroke-width="1.5"/>
+      <line x1="-8" y1="4" x2="-15" y2="8" stroke="#ffa657" stroke-width="1.5"/>
+      <line x1="8" y1="4" x2="15" y2="8" stroke="#ffa657" stroke-width="1.5"/>
+      <!-- Stripe -->
+      <line x1="-7" y1="0" x2="7" y2="0" stroke="#ffa657" stroke-width="1" opacity="0.5"/>
+    </g>
+
+    <circle cx="99" cy="90" r="3" fill="#ffa657" class="dot-pulse-d3"/>
+
+    <text x="99" y="115" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="600" fill="#e6edf3">Debug</text>
+    <text x="99" y="133" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="14" font-weight="600" fill="#e6edf3">Board</text>
+    <text x="99" y="158" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#8b949e">Visual piece detection</text>
+    <text x="99" y="173" text-anchor="middle" font-family="'Segoe UI', system-ui, sans-serif" font-size="11" fill="#8b949e">verification window</text>
+  </g>
+</svg>
