@@ -45,6 +45,29 @@ class ChessEngine:
             print(f"Engine error: {e}")
             return None
 
+    def get_evaluation(self, fen: str, depth: int = 10) -> int:
+        """Evaluate a position and return score in centipawns from side-to-move POV.
+
+        Mate scores are converted to large centipawn values (±100000).
+        """
+        try:
+            self.engine.set_fen_position(fen)
+            result = self.engine.get_evaluation()
+            if result["type"] == "cp":
+                return result["value"]
+            elif result["type"] == "mate":
+                mate_moves = result["value"]
+                if mate_moves > 0:
+                    return 100000
+                elif mate_moves < 0:
+                    return -100000
+                else:
+                    return 0
+            return 0
+        except Exception as e:
+            print(f"Evaluation error: {e}")
+            return 0
+
     def parse_move(self, uci_move: str) -> tuple[tuple[int, int], tuple[int, int]]:
         """Convert UCI move to (from_row, from_col), (to_row, to_col).
 
