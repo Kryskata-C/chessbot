@@ -25,6 +25,7 @@ from piece_recognizer import (
     reload_templates,
 )
 from engine import ChessEngine
+from elo_estimator import EloEstimator
 from overlay import OverlayWindow, MenuWindow, DebugBoardWindow
 
 SCAN_INTERVAL_MS = 200
@@ -86,6 +87,7 @@ class ChessVision:
         self.current_turn: str = "w"  # white always moves first
         self.running = True
         self.has_templates = len(get_templates()) > 0
+        self.elo_estimator = EloEstimator()
         self.scan_timer: QTimer | None = None
         # Position stability: require same FEN for 2 scans before accepting
         self._pending_fen: str | None = None
@@ -325,11 +327,35 @@ class ChessVision:
                             pass
                     self.current_turn = picked
 
+            # Estimate opponent ELO when opponent just moved
+            if (self.last_fen_position is not None
+                    and self.current_turn == self.player_color):
+                # Opponent just moved: evaluate before and after
+                opp_color = "b" if self.player_color == "w" else "w"
+                old_castling = infer_castling(self.last_fen_position)
+                new_castling = infer_castling(fen_position)
+                old_fen = f"{self.last_fen_position} {opp_color} {old_castling} - 0 1"
+                new_fen = f"{fen_position} {self.player_color} {new_castling} - 0 1"
+                try:
+                    eval_before = self.engine.get_evaluation(old_fen)
+                    eval_after = self.engine.get_evaluation(new_fen)
+                    # Both evals are from side-to-move POV:
+                    # eval_before = how good it was for opponent
+                    # eval_after = how good it is for player (negative = bad for opponent)
+                    # CPL = eval_before + eval_after (opponent's loss)
+                    cpl = eval_before + eval_after
+                    self.elo_estimator.record_move(cpl)
+                except Exception as e:
+                    print(f"ELO estimation error: {e}")
+
             self.last_fen_position = fen_position
 
             # Update debug board GUI
+            elo_est = self.elo_estimator.get_estimate()
+            acpl = self.elo_estimator.get_acpl()
             self.debug_board.set_positions(
-                positions, white_on_bottom, self.current_turn, piece_count
+                positions, white_on_bottom, self.current_turn, piece_count,
+                estimated_elo=elo_est, opponent_acpl=acpl,
             )
 
             if piece_count < 4:
