@@ -119,6 +119,123 @@ class MenuWindow(QDialog):
         self._drag_pos = None
 
 
+PIECE_UNICODE = {
+    "K": "\u2654", "Q": "\u2655", "R": "\u2656", "B": "\u2657", "N": "\u2658", "P": "\u2659",
+    "k": "\u265a", "q": "\u265b", "r": "\u265c", "b": "\u265d", "n": "\u265e", "p": "\u265f",
+}
+
+
+class DebugBoardWindow(QWidget):
+    """Small always-on-top window showing what pieces the scanner detects."""
+
+    SQUARE_PX = 40  # size of each square in the debug board
+
+    def __init__(self):
+        super().__init__()
+        self._drag_pos: Optional[QPoint] = None
+        self.positions: list[list[str | None]] = [[None] * 8 for _ in range(8)]
+        self.white_on_bottom: bool = True
+        self.turn: str = "w"
+        self.piece_count: int = 0
+
+        size = self.SQUARE_PX * 8 + 40  # board + margins for labels
+        self.setFixedSize(size, size + 28)  # extra space for info text
+        self.setWindowTitle("Debug Board")
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setStyleSheet("background: #1e1e1e;")
+
+        # Position in top-right area of screen
+        screen = QApplication.primaryScreen()
+        if screen:
+            geo = screen.geometry()
+            self.move(geo.width() - self.width() - 20, 80)
+
+    def set_positions(self, positions: list[list[str | None]],
+                      white_on_bottom: bool, turn: str, piece_count: int):
+        self.positions = positions
+        self.white_on_bottom = white_on_bottom
+        self.turn = turn
+        self.piece_count = piece_count
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        sq = self.SQUARE_PX
+        margin = 20  # left/top margin for rank/file labels
+
+        light = QColor(238, 238, 210)  # chess.com beige
+        dark = QColor(118, 150, 86)    # chess.com green
+
+        ranks = "87654321" if self.white_on_bottom else "12345678"
+        files = "abcdefgh" if self.white_on_bottom else "hgfedcba"
+
+        # Draw rank labels
+        label_font = QFont("Helvetica Neue", 10)
+        painter.setFont(label_font)
+        painter.setPen(QColor(160, 160, 160))
+        for i in range(8):
+            y = margin + i * sq + sq // 2 + 5
+            painter.drawText(2, y, ranks[i])
+
+        # Draw file labels
+        for i in range(8):
+            x = margin + i * sq + sq // 2 - 4
+            painter.drawText(x, margin + 8 * sq + 15, files[i])
+
+        # Draw board squares and pieces
+        piece_font = QFont("Arial", sq - 12)
+        for row in range(8):
+            for col in range(8):
+                x = margin + col * sq
+                y = margin + row * sq
+
+                # Square color
+                is_light = (row + col) % 2 == 0
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(light if is_light else dark)
+                painter.drawRect(x, y, sq, sq)
+
+                # Piece
+                p = self.positions[row][col]
+                if p:
+                    painter.setFont(piece_font)
+                    sym = PIECE_UNICODE.get(p, "?")
+                    painter.setPen(QColor(0, 0, 0) if p.isupper() else QColor(40, 40, 40))
+                    painter.drawText(
+                        QRect(x, y, sq, sq),
+                        Qt.AlignmentFlag.AlignCenter,
+                        sym,
+                    )
+
+        # Info bar at bottom
+        info_font = QFont("Helvetica Neue", 10, QFont.Weight.Bold)
+        painter.setFont(info_font)
+        turn_name = "White" if self.turn == "w" else "Black"
+        info = f"{self.piece_count} pieces | {turn_name} to move"
+        painter.setPen(QColor(200, 200, 200))
+        info_y = margin + 8 * sq + 24
+        painter.drawText(margin, info_y, info)
+
+        painter.end()
+
+    # --- draggable ---
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_pos = event.globalPosition().toPoint() - self.pos()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos and event.buttons() & Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_pos)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_pos = None
+
+
 class OverlayWindow(QWidget):
     """Transparent always-on-top overlay that draws move highlights."""
 
