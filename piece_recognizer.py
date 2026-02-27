@@ -111,9 +111,6 @@ def recognize_board(screenshot: np.ndarray, board: dict) -> list[list[str | None
     """
     sq = board["square_size"]
     img_h, img_w = screenshot.shape[:2]
-    # Inset edge squares by a few pixels to avoid board-border artifacts
-    # that cause noisy recognition on ranks 1/8 and files a/h
-    inset = max(1, round(sq * 0.04))
     positions = []
     for row in range(8):
         rank = []
@@ -122,17 +119,6 @@ def recognize_board(screenshot: np.ndarray, board: dict) -> list[list[str | None
             y = round(board["y"] + row * sq)
             w = round(sq)
             h = round(sq)
-            # Apply inset for edge squares
-            if col == 0:
-                x += inset
-                w -= inset
-            if col == 7:
-                w -= inset
-            if row == 0:
-                y += inset
-                h -= inset
-            if row == 7:
-                h -= inset
             # Clamp to image bounds so edge squares don't go out of frame
             x = max(0, min(x, img_w - 1))
             y = max(0, min(y, img_h - 1))
