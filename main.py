@@ -352,12 +352,17 @@ class ChessVision:
 
             self.last_fen_position = fen_position
 
-            # Update debug board GUI
+            # Feed opponent ELO estimate to move selector for adaptive play
             elo_est = self.elo_estimator.get_estimate()
             acpl = self.elo_estimator.get_acpl()
+            self.move_selector.set_opponent_elo(elo_est)
+
+            # Update debug board GUI
             self.debug_board.set_positions(
                 positions, white_on_bottom, self.current_turn, piece_count,
                 estimated_elo=elo_est, opponent_acpl=acpl,
+                bot_accuracy=self.move_selector.get_accuracy(),
+                bot_cpl=self.move_selector.get_avg_cpl(),
             )
 
             if piece_count < 4:

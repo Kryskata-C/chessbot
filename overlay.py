@@ -139,9 +139,11 @@ class DebugBoardWindow(QWidget):
         self.piece_count: int = 0
         self.estimated_elo: int | None = None
         self.opponent_acpl: float | None = None
+        self.bot_accuracy: float | None = None
+        self.bot_cpl: float | None = None
 
         size = self.SQUARE_PX * 8 + 40  # board + margins for labels
-        self.setFixedSize(size, size + 50)  # extra space for info text + ELO line
+        self.setFixedSize(size, size + 68)  # extra space for info text + ELO + accuracy
         self.setWindowTitle("Debug Board")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -158,13 +160,17 @@ class DebugBoardWindow(QWidget):
     def set_positions(self, positions: list[list[str | None]],
                       white_on_bottom: bool, turn: str, piece_count: int,
                       estimated_elo: int | None = None,
-                      opponent_acpl: float | None = None):
+                      opponent_acpl: float | None = None,
+                      bot_accuracy: float | None = None,
+                      bot_cpl: float | None = None):
         self.positions = positions
         self.white_on_bottom = white_on_bottom
         self.turn = turn
         self.piece_count = piece_count
         self.estimated_elo = estimated_elo
         self.opponent_acpl = opponent_acpl
+        self.bot_accuracy = bot_accuracy
+        self.bot_cpl = bot_cpl
         self.update()
 
     def paintEvent(self, event):
@@ -238,6 +244,16 @@ class DebugBoardWindow(QWidget):
         else:
             elo_text = "Est. ELO: analyzing..."
         painter.drawText(margin, elo_y, elo_text)
+
+        # Bot accuracy line
+        acc_y = elo_y + 16
+        painter.setPen(QColor(120, 180, 230))  # soft blue
+        if self.bot_accuracy is not None:
+            cpl_str = f" | CPL: {self.bot_cpl:.0f}" if self.bot_cpl is not None else ""
+            acc_text = f"Bot accuracy: {self.bot_accuracy:.0f}%{cpl_str}"
+        else:
+            acc_text = "Bot accuracy: --"
+        painter.drawText(margin, acc_y, acc_text)
 
         painter.end()
 
