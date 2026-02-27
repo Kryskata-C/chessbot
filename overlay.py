@@ -233,7 +233,16 @@ class OverlayWindow(QWidget):
         Args:
             rects: List of dicts with keys x, y, w, h (screen coordinates).
         """
-        self.highlights = rects
+        # Clamp rectangles to screen bounds so edge squares aren't clipped
+        geo = self.geometry()
+        clamped = []
+        for r in rects:
+            x = max(0, r["x"])
+            y = max(0, r["y"])
+            w = min(r["w"], geo.width() - x)
+            h = min(r["h"], geo.height() - y)
+            clamped.append({"x": x, "y": y, "w": w, "h": h})
+        self.highlights = clamped
         self.update()
 
     def clear_highlights(self):
