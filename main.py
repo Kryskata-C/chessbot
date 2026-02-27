@@ -52,6 +52,9 @@ class ChessVision:
         self._pending_fen: str | None = None
         self._pending_count: int = 0
         self._STABLE_SCANS = 2
+        # Board coordinate cache — reuse if detection is close to last known
+        self._cached_board: dict | None = None
+        self._BOARD_DRIFT_THRESHOLD = 5  # max pixel drift before re-caching
 
         # Wire up menu → start
         self.menu.color_selected.connect(self._on_color_selected)
@@ -188,9 +191,26 @@ class ChessVision:
             board = detect_board(screenshot)
 
             if board is None:
+                self._cached_board = None
                 self.overlay.clear_highlights()
                 self.overlay.set_status("Scanning... no board found", BLUE)
                 return
+
+            # Stabilize board coordinates: if the new detection is very close
+            # to the cached one, reuse the cached coords to prevent jitter
+            # that causes edge-square recognition noise.
+            if self._cached_board is not None:
+                dx = abs(board["x"] - self._cached_board["x"])
+                dy = abs(board["y"] - self._cached_board["y"])
+                ds = abs(board["width"] - self._cached_board["width"])
+                if dx <= self._BOARD_DRIFT_THRESHOLD and \
+                   dy <= self._BOARD_DRIFT_THRESHOLD and \
+                   ds <= self._BOARD_DRIFT_THRESHOLD:
+                    board = self._cached_board
+                else:
+                    self._cached_board = board
+            else:
+                self._cached_board = board
 
             if not self.has_templates:
                 self.overlay.set_status("Board found — calibrating...", ORANGE)
