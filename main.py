@@ -29,6 +29,33 @@ from overlay import OverlayWindow, MenuWindow
 
 SCAN_INTERVAL_MS = 200
 
+# Unicode piece symbols for debug display
+PIECE_UNICODE = {
+    "K": "\u2654", "Q": "\u2655", "R": "\u2656", "B": "\u2657", "N": "\u2658", "P": "\u2659",
+    "k": "\u265a", "q": "\u265b", "r": "\u265c", "b": "\u265d", "n": "\u265e", "p": "\u265f",
+}
+
+
+def print_board(positions: list[list[str | None]], white_on_bottom: bool):
+    """Print a visual board to the terminal showing what the scanner sees."""
+    ranks = "87654321" if white_on_bottom else "12345678"
+    files = "abcdefgh" if white_on_bottom else "hgfedcba"
+    print("  ┌───┬───┬───┬───┬───┬───┬───┬───┐")
+    for i, row in enumerate(positions):
+        rank_label = ranks[i]
+        cells = []
+        for j, p in enumerate(row):
+            sym = PIECE_UNICODE.get(p, " ") if p else "·"
+            # Alternate background for readability
+            cells.append(f" {sym} ")
+        print(f"{rank_label} │{'│'.join(cells)}│")
+        if i < 7:
+            print("  ├───┼───┼───┼───┼───┼───┼───┼───┤")
+    print("  └───┴───┴───┴───┴───┴───┴───┴───┘")
+    print(f"    {('   '.join(files))}")
+    print()
+
+
 # Status colors
 BLUE = QColor(0, 120, 255)
 GREEN = QColor(30, 180, 60)
@@ -284,6 +311,11 @@ class ChessVision:
                     self.current_turn = picked
 
             self.last_fen_position = fen_position
+
+            # Debug: show what the scanner sees
+            turn_label = "White" if self.current_turn == "w" else "Black"
+            print(f"--- Detected board ({piece_count} pieces, {turn_label} to move) ---")
+            print_board(positions, white_on_bottom)
 
             if piece_count < 4:
                 self.overlay.set_status(
