@@ -114,10 +114,10 @@ def recognize_board(screenshot: np.ndarray, board: dict) -> list[list[str | None
     for row in range(8):
         rank = []
         for col in range(8):
-            x = int(board["x"] + col * sq)
-            y = int(board["y"] + row * sq)
-            w = int(sq)
-            h = int(sq)
+            x = round(board["x"] + col * sq)
+            y = round(board["y"] + row * sq)
+            w = round(sq)
+            h = round(sq)
             square_img = screenshot[y : y + h, x : x + w]
             if square_img.size == 0:
                 rank.append(None)
