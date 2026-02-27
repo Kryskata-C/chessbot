@@ -26,6 +26,7 @@ from piece_recognizer import (
 )
 from engine import ChessEngine
 from elo_estimator import EloEstimator
+from move_selector import HumanMoveSelector
 from overlay import OverlayWindow, MenuWindow, DebugBoardWindow
 
 SCAN_INTERVAL_MS = 200
@@ -78,6 +79,7 @@ def infer_castling(fen_position: str) -> str:
 class ChessVision:
     def __init__(self):
         self.engine = ChessEngine(depth=12, threads=2)
+        self.move_selector = HumanMoveSelector(self.engine)
         self.overlay = OverlayWindow()
         self.debug_board = DebugBoardWindow()
         self.menu = MenuWindow()
@@ -380,21 +382,21 @@ class ChessVision:
             fen = f"{fen_position} {self.player_color} {castling} - 0 1"
             print(f"FEN: {fen}  ({piece_count} pieces)")
 
-            best_move = self.engine.get_best_move(fen)
-            if best_move is None:
+            chosen_move = self.move_selector.select_move(fen, piece_count)
+            if chosen_move is None:
                 self.overlay.set_status("No legal moves found", ORANGE)
                 self.overlay.clear_highlights()
                 return
 
-            self.last_move = best_move
-            print(f"Best move: {best_move}")
+            self.last_move = chosen_move
+            print(f"Suggested move: {chosen_move}")
 
             from_rect, to_rect = self.engine.move_to_screen_coords(
-                best_move, board, white_on_bottom
+                chosen_move, board, white_on_bottom
             )
             self.overlay.set_highlights([from_rect, to_rect])
             self.overlay.set_status(
-                f"Best move: {best_move}", GREEN, duration_ms=4000
+                f"Move: {chosen_move}", GREEN, duration_ms=4000
             )
 
         except Exception as e:
