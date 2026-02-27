@@ -110,6 +110,7 @@ def recognize_board(screenshot: np.ndarray, board: dict) -> list[list[str | None
         Each cell is a FEN piece char or None.
     """
     sq = board["square_size"]
+    img_h, img_w = screenshot.shape[:2]
     positions = []
     for row in range(8):
         rank = []
@@ -118,6 +119,11 @@ def recognize_board(screenshot: np.ndarray, board: dict) -> list[list[str | None
             y = round(board["y"] + row * sq)
             w = round(sq)
             h = round(sq)
+            # Clamp to image bounds so edge squares don't go out of frame
+            x = max(0, min(x, img_w - 1))
+            y = max(0, min(y, img_h - 1))
+            w = min(w, img_w - x)
+            h = min(h, img_h - y)
             square_img = screenshot[y : y + h, x : x + w]
             if square_img.size == 0:
                 rank.append(None)
