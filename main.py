@@ -51,7 +51,7 @@ class ChessVision:
         # Position stability: require same FEN for 2 scans before accepting
         self._pending_fen: str | None = None
         self._pending_count: int = 0
-        self._STABLE_SCANS = 2
+        self._STABLE_SCANS = 3
         # Board coordinate cache — reuse if detection is close to last known
         self._cached_board: dict | None = None
         self._BOARD_DRIFT_THRESHOLD = 5  # max pixel drift before re-caching
