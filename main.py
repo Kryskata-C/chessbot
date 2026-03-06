@@ -331,11 +331,10 @@ class ChessVision:
             bx, by = round(board["x"]), round(board["y"])
             bw, bh = round(board["width"]), round(board["height"])
             board_region = screenshot[by:by + bh, bx:bx + bw]
-            # Downsample to 64x64 for a fast perceptual hash
             small = board_region[::max(1, bh // 8), ::max(1, bw // 8)]
             board_hash = hash(small.tobytes())
-            if board_hash == self._last_board_hash:
-                return  # board pixels unchanged, skip recognition
+            if board_hash == self._last_board_hash and self.last_fen_position is not None:
+                return  # board pixels unchanged and we have a position, skip
             self._last_board_hash = board_hash
 
             positions = recognize_board(screenshot, board)
