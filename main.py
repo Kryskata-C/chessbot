@@ -95,6 +95,9 @@ class ChessVision:
         self._pending_fen: str | None = None
         self._pending_count: int = 0
         self._STABLE_SCANS = 3
+        # Game boundary tracking
+        self._game_over: bool = False
+        self._en_passant: str = "-"
         # Board coordinate cache — reuse if detection is close to last known
         self._cached_board: dict | None = None
         self._BOARD_DRIFT_THRESHOLD = 5  # max pixel drift before re-caching
@@ -232,6 +235,55 @@ class ChessVision:
 
         return None
 
+    def _reset_game_state(self):
+        """Reset all per-game state for a new game."""
+        self.move_selector.reset()
+        self.elo_estimator.reset()
+        self.last_fen_position = None
+        self.current_turn = "w"
+        self._game_over = False
+        self._en_passant = "-"
+        print("Game state reset for new game.")
+
+    def _infer_en_passant(self, old_fen_pos: str, new_fen_pos: str) -> str:
+        """Infer en passant target square from a pawn double-push."""
+        old_rows = old_fen_pos.split("/")
+        new_rows = new_fen_pos.split("/")
+        if len(old_rows) != 8 or len(new_rows) != 8:
+            return "-"
+
+        def expand(row_str):
+            out = []
+            for ch in row_str:
+                if ch.isdigit():
+                    out.extend([None] * int(ch))
+                else:
+                    out.append(ch)
+            return (out + [None] * 8)[:8]
+
+        col_letters = "abcdefgh"
+
+        for c in range(8):
+            # White pawn double-push: from row 6 (rank 2) to row 4 (rank 4)
+            old_r6 = expand(old_rows[6])
+            new_r6 = expand(new_rows[6])
+            old_r4 = expand(old_rows[4])
+            new_r4 = expand(new_rows[4])
+            if (old_r6[c] == "P" and new_r6[c] is None
+                    and new_r4[c] == "P" and old_r4[c] is None):
+                return f"{col_letters[c]}3"  # EP square behind the pawn
+
+            # Black pawn double-push: from row 1 (rank 7) to row 3 (rank 5)
+            old_r1 = expand(old_rows[1])
+            new_r1 = expand(new_rows[1])
+            old_r3 = expand(old_rows[3])
+            new_r3 = expand(new_rows[3])
+            if (old_r1[c] == "p" and new_r1[c] is None
+                    and new_r3[c] == "p" and old_r3[c] is None):
+                return f"{col_letters[c]}6"  # EP square behind the pawn
+
+        return "-"
+
     def scan(self):
         """One scan cycle: capture -> detect -> recognize -> analyze -> highlight."""
         if not self.running:
@@ -282,6 +334,21 @@ class ChessVision:
 
             fen_position = positions_to_fen(positions, "w").split(" ")[0]
 
+            # New game detection: piece count jumps back near 32
+            STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+            if self._game_over and piece_count >= 30 and fen_position == STARTING_FEN:
+                self._reset_game_state()
+                self.overlay.set_status("New game detected!", GREEN, duration_ms=3000)
+                print("New game detected — state reset.")
+                return
+
+            # In game-over state, keep scanning but skip analysis
+            if self._game_over:
+                self.overlay.set_status(
+                    "Game over — waiting for new game...", ORANGE
+                )
+                return
+
             # No change from accepted position — nothing to do
             if fen_position == self.last_fen_position:
                 self._pending_fen = None
@@ -329,6 +396,33 @@ class ChessVision:
                             pass
                     self.current_turn = picked
 
+            # Infer en passant from pawn double-pushes
+            if self.last_fen_position is not None:
+                self._en_passant = self._infer_en_passant(
+                    self.last_fen_position, fen_position
+                )
+            else:
+                self._en_passant = "-"
+
+            # Check for game over
+            castling_check = infer_castling(fen_position)
+            try:
+                check_board = chess.Board(
+                    f"{fen_position} {self.current_turn} {castling_check} {self._en_passant} 0 1"
+                )
+                if check_board.is_game_over():
+                    self._game_over = True
+                    result = check_board.result()
+                    self.overlay.set_status(
+                        f"Game over ({result}) — waiting for new game...", ORANGE
+                    )
+                    self.overlay.clear_highlights()
+                    self.last_fen_position = fen_position
+                    print(f"Game over detected: {result}")
+                    return
+            except Exception:
+                pass
+
             # Estimate opponent ELO when opponent just moved
             if (self.last_fen_position is not None
                     and self.current_turn == self.player_color):
@@ -336,8 +430,8 @@ class ChessVision:
                 opp_color = "b" if self.player_color == "w" else "w"
                 old_castling = infer_castling(self.last_fen_position)
                 new_castling = infer_castling(fen_position)
-                old_fen = f"{self.last_fen_position} {opp_color} {old_castling} - 0 1"
-                new_fen = f"{fen_position} {self.player_color} {new_castling} - 0 1"
+                old_fen = f"{self.last_fen_position} {opp_color} {old_castling} {self._en_passant} 0 1"
+                new_fen = f"{fen_position} {self.player_color} {new_castling} {self._en_passant} 0 1"
                 try:
                     eval_before = self.engine.get_evaluation(old_fen)
                     eval_after = self.engine.get_evaluation(new_fen)
@@ -384,7 +478,7 @@ class ChessVision:
 
             # Analyze for the player's turn
             castling = infer_castling(fen_position)
-            fen = f"{fen_position} {self.player_color} {castling} - 0 1"
+            fen = f"{fen_position} {self.player_color} {castling} {self._en_passant} 0 1"
             print(f"FEN: {fen}  ({piece_count} pieces)")
 
             chosen_move = self.move_selector.select_move(fen, piece_count)
