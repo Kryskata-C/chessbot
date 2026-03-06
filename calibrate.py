@@ -70,15 +70,18 @@ def calibrate():
     os.makedirs(TEMPLATE_DIR, exist_ok=True)
     sq = board["square_size"]
     saved = 0
-    seen = set()
+    seen_light = set()
+    seen_dark = set()
 
     for row in range(8):
         for col in range(8):
             piece_name = STARTING_POSITION[row][col]
             if piece_name is None:
                 continue
+            is_light = (row + col) % 2 == 0
+            seen = seen_light if is_light else seen_dark
             if piece_name in seen:
-                continue  # Only save one template per piece type
+                continue
             seen.add(piece_name)
 
             x = int(board["x"] + col * sq)
@@ -93,16 +96,17 @@ def calibrate():
 
             # Resize to standard template size
             template = cv2.resize(square_img, (TEMPLATE_SIZE, TEMPLATE_SIZE))
-            path = os.path.join(TEMPLATE_DIR, f"{piece_name}.png")
+            suffix = "light" if is_light else "dark"
+            path = os.path.join(TEMPLATE_DIR, f"{piece_name}_{suffix}.png")
             cv2.imwrite(path, template)
-            print(f"  Saved {piece_name}.png")
+            print(f"  Saved {piece_name}_{suffix}.png")
             saved += 1
 
     print()
-    if saved == 12:
+    if saved == 24:
         print(f"SUCCESS: All {saved} templates saved to templates/")
     else:
-        print(f"WARNING: Only {saved}/12 templates saved. Some pieces may be missing.")
+        print(f"WARNING: Only {saved}/24 templates saved. Some pieces may be missing.")
         print("You may need to adjust board detection parameters.")
 
 
