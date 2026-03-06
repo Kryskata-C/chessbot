@@ -29,7 +29,7 @@ from elo_estimator import EloEstimator
 from move_selector import HumanMoveSelector
 from overlay import OverlayWindow, MenuWindow, DebugBoardWindow
 
-SCAN_INTERVAL_MS = 200
+SCAN_INTERVAL_MS = 300
 
 # Status colors
 BLUE = QColor(0, 120, 255)
@@ -101,6 +101,8 @@ class ChessVision:
         # Board coordinate cache — reuse if detection is close to last known
         self._cached_board: dict | None = None
         self._BOARD_DRIFT_THRESHOLD = 5  # max pixel drift before re-caching
+        # Image hash to skip recognition when board pixels haven't changed
+        self._last_board_hash: int | None = None
 
         # Wire up menu → start
         self.menu.color_selected.connect(self._on_color_selected)
@@ -325,6 +327,17 @@ class ChessVision:
                     )
                 return
 
+            # Fast check: hash the board region to skip recognition if unchanged
+            bx, by = round(board["x"]), round(board["y"])
+            bw, bh = round(board["width"]), round(board["height"])
+            board_region = screenshot[by:by + bh, bx:bx + bw]
+            # Downsample to 64x64 for a fast perceptual hash
+            small = board_region[::max(1, bh // 8), ::max(1, bw // 8)]
+            board_hash = hash(small.tobytes())
+            if board_hash == self._last_board_hash:
+                return  # board pixels unchanged, skip recognition
+            self._last_board_hash = board_hash
+
             positions = recognize_board(screenshot, board)
             white_on_bottom = detect_orientation(positions)
 
@@ -404,13 +417,13 @@ class ChessVision:
             else:
                 self._en_passant = "-"
 
-            # Check for game over
+            # Check for game over (only trust it if the position is valid)
             castling_check = infer_castling(fen_position)
             try:
                 check_board = chess.Board(
                     f"{fen_position} {self.current_turn} {castling_check} {self._en_passant} 0 1"
                 )
-                if check_board.is_game_over():
+                if check_board.is_valid() and check_board.is_game_over():
                     self._game_over = True
                     result = check_board.result()
                     self.overlay.set_status(
