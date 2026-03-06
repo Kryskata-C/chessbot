@@ -24,35 +24,49 @@ def find_stockfish() -> str:
 class ChessEngine:
     def __init__(self, depth: int = 18, threads: int = 2):
         self.depth = depth
-        path = find_stockfish()
+        self._threads = threads
+        self._path = find_stockfish()
         self.engine = Stockfish(
-            path=path,
+            path=self._path,
             depth=depth,
             parameters={"Threads": threads, "Hash": 128},
         )
 
-    def get_best_move(self, fen: str) -> str | None:
-        """Get the best move for the given FEN position.
-
-        Returns:
-            UCI move string (e.g., 'e2e4') or None if no move.
-        """
+    def _restart(self):
+        """Restart Stockfish process after a crash."""
         try:
-            self.engine.set_fen_position(fen)
-            move = self.engine.get_best_move()
-            return move
+            self.engine = Stockfish(
+                path=self._path,
+                depth=self.depth,
+                parameters={"Threads": self._threads, "Hash": 128},
+            )
+            print("Stockfish restarted successfully.")
         except Exception as e:
-            print(f"Engine error: {e}")
-            return None
+            print(f"Stockfish restart failed: {e}")
+
+    def _safe_call(self, fn, fallback=None):
+        """Call fn, restarting Stockfish once on failure."""
+        try:
+            return fn()
+        except Exception as e:
+            print(f"Engine error ({e}), restarting Stockfish...")
+            self._restart()
+            try:
+                return fn()
+            except Exception as e2:
+                print(f"Engine error after restart: {e2}")
+                return fallback
+
+    def get_best_move(self, fen: str) -> str | None:
+        """Get the best move for the given FEN position."""
+        def _call():
+            self.engine.set_fen_position(fen)
+            return self.engine.get_best_move()
+        return self._safe_call(_call, fallback=None)
 
     def get_top_moves(self, fen: str, n: int = 5) -> list[dict]:
-        """Get the top N moves with evaluations for the given position.
-
-        Returns:
-            List of {'move': str, 'eval': int} sorted best-first.
-            Eval is centipawns from side-to-move POV.
-        """
-        try:
+        """Get the top N moves with evaluations for the given position."""
+        def _call():
             self.engine.set_fen_position(fen)
             raw = self.engine.get_top_moves(n)
             result = []
@@ -63,16 +77,11 @@ class ChessEngine:
                     eval_cp = m.get("Centipawn", 0)
                 result.append({"move": m["Move"], "eval": eval_cp})
             return result
-        except Exception as e:
-            print(f"Top moves error: {e}")
-            return []
+        return self._safe_call(_call, fallback=[])
 
     def get_evaluation(self, fen: str, depth: int = 10) -> int:
-        """Evaluate a position and return score in centipawns from side-to-move POV.
-
-        Mate scores are converted to large centipawn values (±100000).
-        """
-        try:
+        """Evaluate a position and return score in centipawns from side-to-move POV."""
+        def _call():
             self.engine.set_fen_position(fen)
             result = self.engine.get_evaluation()
             if result["type"] == "cp":
@@ -86,9 +95,7 @@ class ChessEngine:
                 else:
                     return 0
             return 0
-        except Exception as e:
-            print(f"Evaluation error: {e}")
-            return 0
+        return self._safe_call(_call, fallback=0)
 
     def parse_move(self, uci_move: str) -> tuple[tuple[int, int], tuple[int, int]]:
         """Convert UCI move to (from_row, from_col), (to_row, to_col).
