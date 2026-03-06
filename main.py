@@ -29,7 +29,7 @@ from elo_estimator import EloEstimator
 from move_selector import HumanMoveSelector
 from overlay import OverlayWindow, MenuWindow, DebugBoardWindow
 
-SCAN_INTERVAL_MS = 300
+SCAN_INTERVAL_MS = 400
 
 # Status colors
 BLUE = QColor(0, 120, 255)
@@ -101,8 +101,6 @@ class ChessVision:
         # Board coordinate cache — reuse if detection is close to last known
         self._cached_board: dict | None = None
         self._BOARD_DRIFT_THRESHOLD = 5  # max pixel drift before re-caching
-        # Image hash to skip recognition when board pixels haven't changed
-        self._last_board_hash: int | None = None
 
         # Wire up menu → start
         self.menu.color_selected.connect(self._on_color_selected)
@@ -326,16 +324,6 @@ class ChessVision:
                         RED,
                     )
                 return
-
-            # Fast check: hash the board region to skip recognition if unchanged
-            bx, by = round(board["x"]), round(board["y"])
-            bw, bh = round(board["width"]), round(board["height"])
-            board_region = screenshot[by:by + bh, bx:bx + bw]
-            small = board_region[::max(1, bh // 8), ::max(1, bw // 8)]
-            board_hash = hash(small.tobytes())
-            if board_hash == self._last_board_hash and self.last_fen_position is not None:
-                return  # board pixels unchanged and we have a position, skip
-            self._last_board_hash = board_hash
 
             positions = recognize_board(screenshot, board)
             white_on_bottom = detect_orientation(positions)
