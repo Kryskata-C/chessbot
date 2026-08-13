@@ -9,7 +9,7 @@ import ctypes
 import ctypes.util
 from typing import Optional
 from PyQt6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QPoint
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QPolygonF
+from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QFontMetrics, QPolygonF
 from PyQt6.QtWidgets import QWidget, QApplication
 
 
@@ -164,14 +164,6 @@ class DebugBoardWindow(QWidget):
         self._drag_pos = None
 
 
-def _ease_out_cubic(t: float) -> float:
-    return 1.0 - (1.0 - t) ** 3
-
-
-def _ease_in_out(t: float) -> float:
-    return t * t * (3.0 - 2.0 * t)
-
-
 def _lerp_color(a: QColor, b: QColor, t: float) -> QColor:
     t = max(0.0, min(1.0, t))
     return QColor(
@@ -190,16 +182,16 @@ CANDIDATE_BLUE = QColor(120, 180, 255)
 THREAT_RED = QColor(255, 65, 55)
 TRAIL_ORANGE = QColor(255, 150, 60)
 
-# Animation timing
-ARROW_DRAW_S = 0.26      # main arrow draw-on duration
-REPLY_DELAY_S = 0.28     # pause before enemy reply arrow appears
-PLY_STAGGER_S = 0.30     # stagger between successive PV plies
-GHOST_PERIOD_S = 1.7     # ghost piece slide loop length (speed knob)
-TRAIL_DURATION_S = 2.6   # enemy move trail fade-out
+# How long the enemy move trail stays on screen before auto-clearing
+TRAIL_DURATION_MS = 2600
 
 
 class OverlayWindow(QWidget):
-    """Transparent always-on-top overlay that draws animated move visuals."""
+    """Transparent always-on-top overlay drawing static move visuals.
+
+    Everything renders once per state change — there is no animation
+    clock, so the overlay costs nothing between updates.
+    """
 
     def __init__(self):
         super().__init__()
@@ -221,17 +213,20 @@ class OverlayWindow(QWidget):
         self._suggestion: Optional[dict] = None
         # Player pieces in danger (square names like "e4")
         self._threats: list[str] = []
-        # Opponent's last move trail: {move, t0}
+        # Opponent's last move trail (auto-clears after a short delay)
         self._trail: Optional[dict] = None
+        self._trail_timer: Optional[QTimer] = None
         # Eval bar state (white's winning fraction, 0..1)
-        self._eval_target: float = 0.5
-        self._eval_shown: float = 0.5
+        self._eval_frac: float = 0.5
         self._eval_cp: int = 0
         self._has_eval: bool = False
 
-        self._anim = QTimer(self)
-        self._anim.setInterval(33)
-        self._anim.timeout.connect(self._tick)
+        # Cached paint resources (fullscreen repaints are expensive on
+        # Retina displays, so updates repaint only the board region and
+        # reuse fonts instead of rebuilding them)
+        self._status_font = QFont("Helvetica Neue", 16, QFont.Weight.Bold)
+        self._ghost_font: Optional[QFont] = None
+        self._ghost_font_px: int = 0
 
         # Frameless, always-on-top, transparent, click-through
         self.setWindowFlags(
@@ -310,10 +305,11 @@ class OverlayWindow(QWidget):
             color: Background color for the banner.
             duration_ms: If > 0, auto-clear after this many ms.
         """
+        old_rect = self._banner_rect(self.status_text)
         self.status_text = text
         if color:
             self.status_color = color
-        self.update()
+        self.update(old_rect.united(self._banner_rect(text)))
 
         # Cancel any previous auto-clear timer
         if self._status_timer:
@@ -327,8 +323,18 @@ class OverlayWindow(QWidget):
             self._status_timer.start(duration_ms)
 
     def _clear_status(self):
+        old_rect = self._banner_rect(self.status_text)
         self.status_text = ""
-        self.update()
+        self.update(old_rect)
+
+    def _banner_rect(self, text: str) -> QRect:
+        """Screen rect the status banner occupies (with a safety margin)."""
+        if not text:
+            return QRect()
+        metrics = QFontMetrics(self._status_font)
+        w = metrics.horizontalAdvance(text) + 48
+        h = metrics.height() + 24
+        return QRect((self.width() - w) // 2 - 3, 27, w + 6, h + 6)
 
     # ------------------------------------------------------------------
     # Public API
@@ -340,12 +346,20 @@ class OverlayWindow(QWidget):
 
     def set_board_geometry(self, board: dict, white_on_bottom: bool):
         """Cache detected board position so visuals can map squares to pixels."""
-        self._board_geo = {
+        old_region = self._board_region()
+        new_geo = {
             "x": float(board["x"]),
             "y": float(board["y"]),
             "sq": float(board["square_size"]),
             "wob": bool(white_on_bottom),
         }
+        if new_geo == self._board_geo:
+            return
+        self._board_geo = new_geo
+        # Repaint both the stale and the new area when the board moves
+        if old_region is not None:
+            self.update(old_region)
+        self._repaint_board()
 
     def show_suggestion(
         self,
@@ -357,13 +371,13 @@ class OverlayWindow(QWidget):
         pv: list[str] | None = None,
         candidates: list[str] | None = None,
     ):
-        """Visualize a suggested move with animated arrow + ghost piece.
+        """Visualize a suggested move with a static arrow + ghost piece.
 
         Args:
             move_uci: The suggested move, e.g. "e2e4".
             piece_symbol: FEN symbol of the moving piece ("N", "p", ...).
             crit: 0-1 criticality; shifts arrow color green -> red.
-            is_capture: Draw a pulsing capture ring on the target square.
+            is_capture: Draw a capture ring on the target square.
             is_check: Style the arrow gold (checking move).
             pv: Predicted continuation after the move (enemy reply first).
             candidates: Alternative good moves to ghost in faintly.
@@ -376,39 +390,45 @@ class OverlayWindow(QWidget):
             "check": is_check,
             "pv": list(pv or []),
             "candidates": list(candidates or []),
-            "t0": time.time(),
         }
-        self._ensure_anim()
-        self.update()
+        self._repaint_board()
 
     def clear_highlights(self):
         self._suggestion = None
-        self.update()
+        self._repaint_board()
 
     def set_threats(self, squares: list[str]):
         """Squares (e.g. ["c3", "f7"]) holding player pieces in danger."""
+        if squares == self._threats:
+            return
         self._threats = list(squares)
-        if self._threats:
-            self._ensure_anim()
-        self.update()
+        self._repaint_board()
 
     def flash_enemy_move(self, move_uci: str):
-        """Show a fading trail on the opponent's last move."""
-        self._trail = {"move": move_uci, "t0": time.time()}
-        self._ensure_anim()
-        self.update()
+        """Highlight the opponent's last move, auto-clearing shortly after."""
+        self._trail = {"move": move_uci}
+        self._repaint_board()
+        if self._trail_timer is not None:
+            self._trail_timer.stop()
+        self._trail_timer = QTimer(self)
+        self._trail_timer.setSingleShot(True)
+        self._trail_timer.timeout.connect(self._clear_trail)
+        self._trail_timer.start(TRAIL_DURATION_MS)
+
+    def _clear_trail(self):
+        self._trail = None
+        self._repaint_board()
 
     def set_eval(self, cp_white_pov: int):
-        """Update the eval bar target (centipawns from White's POV)."""
+        """Update the eval bar (centipawns from White's POV)."""
         self._eval_cp = cp_white_pov
         # Map centipawns to a win fraction with a logistic curve
         x = max(-2000, min(2000, cp_white_pov))
-        self._eval_target = 1.0 / (1.0 + math.exp(-x / 280.0))
+        self._eval_frac = 1.0 / (1.0 + math.exp(-x / 280.0))
         if abs(cp_white_pov) >= 90000:
-            self._eval_target = 0.995 if cp_white_pov > 0 else 0.005
+            self._eval_frac = 0.995 if cp_white_pov > 0 else 0.005
         self._has_eval = True
-        self._ensure_anim()
-        self.update()
+        self._repaint_board()
 
     def reset_board_visuals(self):
         """Clear everything tied to the board (lost board / new game)."""
@@ -416,31 +436,30 @@ class OverlayWindow(QWidget):
         self._threats = []
         self._trail = None
         self._has_eval = False
-        self.update()
+        self._repaint_board()
 
     # ------------------------------------------------------------------
-    # Animation clock
+    # Repaint regions
     # ------------------------------------------------------------------
 
-    def _ensure_anim(self):
-        if not self._anim.isActive():
-            self._anim.start()
+    def _board_region(self) -> Optional[QRect]:
+        """Dirty rect covering the board plus eval bar / chip margins."""
+        geo = self._board_geo
+        if geo is None:
+            return None
+        sq = geo["sq"]
+        return QRect(
+            int(geo["x"] - 44), int(geo["y"] - 34),
+            int(sq * 8 + 96), int(sq * 8 + 68),
+        )
 
-    def _anim_needed(self) -> bool:
-        if self._suggestion is not None or self._trail is not None:
-            return True
-        if self._threats and self.visuals.get("threats", True):
-            return True
-        if self._has_eval and abs(self._eval_shown - self._eval_target) > 0.002:
-            return True
-        return False
-
-    def _tick(self):
-        if self._trail and time.time() - self._trail["t0"] > TRAIL_DURATION_S:
-            self._trail = None
-        if not self._anim_needed():
-            self._anim.stop()
-        self.update()
+    def _repaint_board(self):
+        """Request a repaint of just the board area, not the whole screen."""
+        region = self._board_region()
+        if region is None:
+            self.update()
+        else:
+            self.update(region)
 
     # ------------------------------------------------------------------
     # Geometry helpers
@@ -472,30 +491,32 @@ class OverlayWindow(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        now = time.time()
+        dirty = event.rect()
 
-        # Smoothly chase the eval target
-        self._eval_shown += (self._eval_target - self._eval_shown) * 0.15
-
-        self._draw_status(painter)
+        # Only paint the pieces of UI that intersect the dirty region —
+        # state changes repaint just the board area, so an update never
+        # rasterizes the whole Retina screen.
+        if self.status_text and dirty.intersects(self._banner_rect(self.status_text)):
+            self._draw_status(painter)
 
         if self._board_geo is not None:
-            if self._has_eval and self.visuals.get("evalbar", True):
-                self._draw_eval_bar(painter)
-            if self._threats and self.visuals.get("threats", True):
-                self._draw_threats(painter, now)
-            if self._trail is not None and self.visuals.get("trail", True):
-                self._draw_trail(painter, now)
-            if self._suggestion is not None:
-                self._draw_suggestion(painter, now)
+            region = self._board_region()
+            if region is not None and dirty.intersects(region):
+                if self._has_eval and self.visuals.get("evalbar", True):
+                    self._draw_eval_bar(painter)
+                if self._threats and self.visuals.get("threats", True):
+                    self._draw_threats(painter)
+                if self._trail is not None and self.visuals.get("trail", True):
+                    self._draw_trail(painter)
+                if self._suggestion is not None:
+                    self._draw_suggestion(painter)
 
         painter.end()
 
     def _draw_status(self, painter: QPainter):
         if not self.status_text:
             return
-        font = QFont("Helvetica Neue", 16, QFont.Weight.Bold)
-        painter.setFont(font)
+        painter.setFont(self._status_font)
         metrics = painter.fontMetrics()
         text_width = metrics.horizontalAdvance(self.status_text)
         text_height = metrics.height()
@@ -524,22 +545,19 @@ class OverlayWindow(QWidget):
         painter: QPainter,
         a: QPointF,
         b: QPointF,
-        frac: float,
         color: QColor,
         width: float,
         alpha: int = 230,
         dashed: bool = False,
         glow: bool = False,
     ):
-        """Draw an arrow from a to b, drawn-on up to `frac` of its length."""
-        if frac <= 0.02:
-            return
+        """Draw an arrow from a to b."""
         dx, dy = b.x() - a.x(), b.y() - a.y()
         dist = math.hypot(dx, dy)
         if dist < 2:
             return
         ux, uy = dx / dist, dy / dist
-        tip = QPointF(a.x() + dx * frac, a.y() + dy * frac)
+        tip = b
         head = max(width * 2.2, 10.0)
         base = QPointF(tip.x() - ux * head, tip.y() - uy * head)
 
@@ -573,14 +591,13 @@ class OverlayWindow(QWidget):
         painter.setBrush(c)
         painter.drawPolygon(poly)
 
-    def _draw_suggestion(self, painter: QPainter, now: float):
+    def _draw_suggestion(self, painter: QPainter):
         s = self._suggestion
         fr, to = self._move_rects(s["move"])
         if fr is None or to is None:
             return
         geo = self._board_geo
         sq = geo["sq"]
-        t = now - s["t0"]
         a, b = fr.center(), to.center()
 
         crit = s["crit"]
@@ -594,16 +611,13 @@ class OverlayWindow(QWidget):
                 cf, ct = self._move_rects(cand)
                 if cf is not None and ct is not None:
                     self._draw_arrow(
-                        painter, cf.center(), ct.center(), 1.0,
+                        painter, cf.center(), ct.center(),
                         CANDIDATE_BLUE, sq * 0.07, alpha=70,
                     )
 
         if self.visuals.get("arrow", True):
-            prog = _ease_out_cubic(min(1.0, t / ARROW_DRAW_S))
-            pulse = 1.0 + 0.14 * crit * math.sin(now * 2 * math.pi / 0.9)
             self._draw_arrow(
-                painter, a, b, prog, color, sq * 0.15 * pulse,
-                alpha=235, glow=True,
+                painter, a, b, color, sq * 0.15, alpha=235, glow=True,
             )
         else:
             # Classic fallback: colored from/to squares
@@ -614,72 +628,49 @@ class OverlayWindow(QWidget):
             painter.setPen(QPen(QColor(0, 255, 0, 200), 3))
             painter.drawRect(to)
 
-        # Pulsing capture ring on the target square
+        # Capture ring on the target square
         if s["capture"]:
-            k = 0.5 + 0.5 * math.sin(now * 2 * math.pi / 0.8)
-            rad = sq * (0.40 + 0.05 * k)
             pen = QPen(QColor(
                 REPLY_ORANGE.red(), REPLY_ORANGE.green(), REPLY_ORANGE.blue(),
-                int(150 + 80 * k),
+                190,
             ), 3)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawEllipse(b, rad, rad)
+            painter.drawEllipse(b, sq * 0.42, sq * 0.42)
 
         # Predicted continuation: enemy reply (dashed) + our follow-up
         pv = s["pv"]
         if pv and (self.visuals.get("reply", True) or self.visuals.get("pv", True)):
-            t_reply = t - (ARROW_DRAW_S + REPLY_DELAY_S)
-            if t_reply > 0:
-                rf, rt = self._move_rects(pv[0])
-                if rf is not None and rt is not None:
-                    prog = _ease_out_cubic(min(1.0, t_reply / 0.25))
-                    self._draw_arrow(
-                        painter, rf.center(), rt.center(), prog,
-                        REPLY_ORANGE, sq * 0.11, alpha=200, dashed=True,
-                    )
+            rf, rt = self._move_rects(pv[0])
+            if rf is not None and rt is not None:
+                self._draw_arrow(
+                    painter, rf.center(), rt.center(),
+                    REPLY_ORANGE, sq * 0.11, alpha=200, dashed=True,
+                )
             if len(pv) > 1 and self.visuals.get("pv", True):
-                t3 = t - (ARROW_DRAW_S + REPLY_DELAY_S + PLY_STAGGER_S)
-                if t3 > 0:
-                    ff, ft = self._move_rects(pv[1])
-                    if ff is not None and ft is not None:
-                        prog = _ease_out_cubic(min(1.0, t3 / 0.25))
-                        self._draw_arrow(
-                            painter, ff.center(), ft.center(), prog,
-                            ARROW_GREEN, sq * 0.09, alpha=110,
-                        )
+                ff, ft = self._move_rects(pv[1])
+                if ff is not None and ft is not None:
+                    self._draw_arrow(
+                        painter, ff.center(), ft.center(),
+                        ARROW_GREEN, sq * 0.09, alpha=110,
+                    )
 
-        # Ghost piece gliding along the move
+        # Ghost of the moving piece on its destination square
         if self.visuals.get("ghost", True) and s["piece"]:
-            self._draw_ghost(painter, s, a, b, sq, t)
+            self._draw_ghost(painter, s, b, sq)
 
-    def _draw_ghost(self, painter: QPainter, s: dict, a: QPointF, b: QPointF,
-                    sq: float, t: float):
-        if t < ARROW_DRAW_S:
-            return  # let the arrow draw on first
+    def _draw_ghost(self, painter: QPainter, s: dict, pos: QPointF, sq: float):
         sym = PIECE_UNICODE.get(s["piece"])
         if sym is None:
             return
-
-        ct = ((t - ARROW_DRAW_S) % GHOST_PERIOD_S) / GHOST_PERIOD_S
-        if ct < 0.62:
-            k = _ease_in_out(ct / 0.62)
-            alpha = 200.0
-        elif ct < 0.85:
-            k = 1.0
-            alpha = 200.0
-        else:
-            k = 1.0
-            alpha = 200.0 * (1.0 - (ct - 0.85) / 0.15)
-        if ct < 0.08:
-            alpha = min(alpha, 200.0 * ct / 0.08)
-        alpha = int(max(0.0, alpha))
-
-        pos = QPointF(a.x() + (b.x() - a.x()) * k, a.y() + (b.y() - a.y()) * k)
+        alpha = 150
         rect = QRectF(pos.x() - sq / 2, pos.y() - sq / 2, sq, sq)
 
-        font = QFont("Arial", int(sq * 0.72))
-        painter.setFont(font)
+        px = int(sq * 0.72)
+        if self._ghost_font is None or self._ghost_font_px != px:
+            self._ghost_font = QFont("Arial", px)
+            self._ghost_font_px = px
+        painter.setFont(self._ghost_font)
 
         is_white = s["piece"].isupper()
         fill = QColor(250, 250, 250, alpha) if is_white else QColor(30, 30, 30, alpha)
@@ -694,37 +685,26 @@ class OverlayWindow(QWidget):
         painter.setPen(fill)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, sym)
 
-    def _draw_threats(self, painter: QPainter, now: float):
-        for i, name in enumerate(self._threats):
+    def _draw_threats(self, painter: QPainter):
+        fill = QColor(THREAT_RED.red(), THREAT_RED.green(), THREAT_RED.blue(), 60)
+        pen = QPen(QColor(
+            THREAT_RED.red(), THREAT_RED.green(), THREAT_RED.blue(), 175,
+        ), 2.5)
+        for name in self._threats:
             r = self._square_rect(name)
             if r is None:
                 continue
-            k = 0.5 + 0.5 * math.sin(now * 2 * math.pi / 1.25 + i * 0.9)
-            fill = QColor(
-                THREAT_RED.red(), THREAT_RED.green(), THREAT_RED.blue(),
-                int(28 + 52 * k),
-            )
-            pen = QPen(QColor(
-                THREAT_RED.red(), THREAT_RED.green(), THREAT_RED.blue(),
-                int(120 + 90 * k),
-            ), 2.5)
             painter.setPen(pen)
             painter.setBrush(fill)
             painter.drawRoundedRect(r.adjusted(2, 2, -2, -2), 6, 6)
 
-    def _draw_trail(self, painter: QPainter, now: float):
-        tr = self._trail
-        age = now - tr["t0"]
-        if age >= TRAIL_DURATION_S:
-            return
-        k = (1.0 - age / TRAIL_DURATION_S) ** 1.5
-        fr, to = self._move_rects(tr["move"])
+    def _draw_trail(self, painter: QPainter):
+        fr, to = self._move_rects(self._trail["move"])
         if fr is None or to is None:
             return
 
         fill = QColor(
-            TRAIL_ORANGE.red(), TRAIL_ORANGE.green(), TRAIL_ORANGE.blue(),
-            int(85 * k),
+            TRAIL_ORANGE.red(), TRAIL_ORANGE.green(), TRAIL_ORANGE.blue(), 70,
         )
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(fill)
@@ -732,8 +712,7 @@ class OverlayWindow(QWidget):
         painter.drawRoundedRect(to.adjusted(2, 2, -2, -2), 6, 6)
 
         pen = QPen(QColor(
-            TRAIL_ORANGE.red(), TRAIL_ORANGE.green(), TRAIL_ORANGE.blue(),
-            int(140 * k),
+            TRAIL_ORANGE.red(), TRAIL_ORANGE.green(), TRAIL_ORANGE.blue(), 120,
         ), 3)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
@@ -753,7 +732,7 @@ class OverlayWindow(QWidget):
         painter.setBrush(QColor(24, 26, 30, 215))
         painter.drawRoundedRect(QRectF(x, y, bw, h), 4, 4)
 
-        frac = max(0.02, min(0.98, self._eval_shown))
+        frac = max(0.02, min(0.98, self._eval_frac))
         wh = h * frac
         if geo["wob"]:
             white_rect = QRectF(x, y + h - wh, bw, wh)
