@@ -226,9 +226,21 @@ def detect_orientation(positions: list[list[str | None]]) -> bool:
     return white_bottom >= white_top
 
 
-def positions_to_fen(positions: list[list[str | None]], turn: str = "w") -> str:
-    """Convert recognized positions to a full FEN string."""
-    white_bottom = detect_orientation(positions)
+def positions_to_fen(
+    positions: list[list[str | None]],
+    turn: str = "w",
+    white_on_bottom: bool | None = None,
+) -> str:
+    """Convert recognized positions to a full FEN string.
+
+    Pass `white_on_bottom` explicitly when the orientation is known (the
+    player's pieces are always at the bottom on chess.com) — guessing it
+    from piece placement flips in endgames when pieces invade the far side.
+    """
+    white_bottom = (
+        detect_orientation(positions) if white_on_bottom is None
+        else white_on_bottom
+    )
     piece_placement = board_to_fen(positions, white_bottom)
 
     if not white_bottom:

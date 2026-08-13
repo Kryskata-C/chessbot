@@ -516,13 +516,18 @@ class ChessVision:
                 return
 
             positions = recognize_board(screenshot, board)
-            white_on_bottom = detect_orientation(positions)
+            # The player's pieces are always at the bottom on chess.com, so
+            # orientation follows from the chosen color. Never guess it from
+            # piece placement — that flips in endgames when pieces advance.
+            white_on_bottom = self.player_color == "w"
 
             piece_count = sum(
                 1 for row in positions for p in row if p is not None
             )
 
-            fen_position = positions_to_fen(positions, "w").split(" ")[0]
+            fen_position = positions_to_fen(
+                positions, "w", white_on_bottom
+            ).split(" ")[0]
 
             # A king can never leave the board. If one is missing even after
             # recovery, this scan is recognition noise (piece mid-drag,
