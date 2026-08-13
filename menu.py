@@ -11,12 +11,12 @@ import time
 from typing import Optional
 
 from PyQt6.QtCore import (
-    Qt, QTimer, QPoint, QPointF, QRectF, pyqtSignal, pyqtProperty,
+    Qt, QTimer, QPoint, QPointF, QRect, QRectF, pyqtSignal, pyqtProperty,
     QPropertyAnimation, QEasingCurve,
 )
 from PyQt6.QtGui import (
     QPainter, QColor, QFont, QPen, QBrush, QLinearGradient, QRadialGradient,
-    QPainterPath,
+    QPainterPath, QPixmap,
 )
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -267,18 +267,42 @@ class MenuWindow(QDialog):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
 
-        # Drifting background chess pieces
-        self._pieces = [{
-            "ch": random.choice("♞♜♝♛♚♟"
-                                "♘♖♗♕♔♙"),
-            "x": random.random(),
-            "y": random.random(),
-            "size": random.uniform(13, 30),
-            "speed": random.uniform(0.010, 0.032),
-            "sway": random.uniform(6, 18),
-            "phase": random.uniform(0, math.tau),
-            "alpha": random.randint(14, 36),
-        } for _ in range(16)]
+        # Drifting background chess pieces, confined to the animated
+        # header/footer bands so per-frame repaints stay small.
+        def _particle(band):
+            return {
+                "ch": random.choice("♞♜♝♛♚♟"
+                                    "♘♖♗♕♔♙"),
+                "x": random.random(),
+                "y": random.random(),
+                "band": band,  # (y_top_frac, y_bottom_frac) of the window
+                "size": random.uniform(13, 28),
+                "speed": random.uniform(0.010, 0.032),
+                "sway": random.uniform(6, 18),
+                "phase": random.uniform(0, math.tau),
+                "alpha": random.randint(14, 36),
+            }
+        self._pieces = (
+            [_particle((0.0, 0.25)) for _ in range(9)]
+            + [_particle((0.86, 1.0)) for _ in range(4)]
+        )
+
+        # Cached paint resources — the card background never changes, and
+        # fonts are expensive to rebuild 30x a second.
+        self._bg_cache: Optional[QPixmap] = None
+        self._title_font = QFont("Helvetica Neue", 23, QFont.Weight.Black)
+        self._title_font.setLetterSpacing(
+            QFont.SpacingType.AbsoluteSpacing, 5)
+        self._sub_font = QFont("Helvetica Neue", 10)
+        self._sub_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1)
+        self._tiny_font = QFont("Helvetica Neue", 8)
+        self._tiny_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
+        self._brand_font = QFont("Helvetica Neue", 14, QFont.Weight.Black)
+        self._brand_font.setLetterSpacing(
+            QFont.SpacingType.AbsoluteSpacing, 3)
+        self._copy_font = QFont("Helvetica Neue", 8)
+        self._knight_font = QFont("Arial", 40)
+        self._particle_fonts: dict[int, QFont] = {}
 
         # --- interactive content ---
         layout = QVBoxLayout(self)
@@ -330,25 +354,20 @@ class MenuWindow(QDialog):
         self.start_btn.clicked.connect(self._on_start)
         layout.addWidget(self.start_btn)
 
-        # Pulsing glow on the start button
+        # Soft static glow on the start button. (Animating the blur radius
+        # re-rasterizes a Gaussian blur every frame — it alone cost ~50% of
+        # a CPU core, so the glow stays static.)
         glow = QGraphicsDropShadowEffect(self.start_btn)
         glow.setOffset(0, 0)
         glow.setColor(_with_alpha(ACCENT, 160))
-        glow.setBlurRadius(18)
+        glow.setBlurRadius(26)
         self.start_btn.setGraphicsEffect(glow)
-        self._glow_anim = QPropertyAnimation(glow, b"blurRadius", self)
-        self._glow_anim.setDuration(1200)
-        self._glow_anim.setStartValue(14.0)
-        self._glow_anim.setKeyValueAt(0.5, 34.0)
-        self._glow_anim.setEndValue(14.0)
-        self._glow_anim.setEasingCurve(QEasingCurve.Type.InOutSine)
-        self._glow_anim.setLoopCount(-1)
-        self._glow_anim.start()
 
-        # Decorative animation clock
+        # Decorative animation clock — repaints only the animated
+        # header/footer bands, not the whole card.
         self._deco_timer = QTimer(self)
-        self._deco_timer.setInterval(33)
-        self._deco_timer.timeout.connect(self.update)
+        self._deco_timer.setInterval(50)
+        self._deco_timer.timeout.connect(self._deco_tick)
         self._deco_timer.start()
 
         # Center on screen
@@ -366,14 +385,13 @@ class MenuWindow(QDialog):
         visuals = {key: row.switch.isChecked()
                    for key, row in self._rows.items()}
         self.started.emit(self.color_select.color(), visuals)
-        self._deco_timer.stop()
-        self._glow_anim.stop()
         self.hide()
 
     # --- entrance animation ---
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._deco_timer.start()
         if self._entrance_done:
             return
         self._entrance_done = True
@@ -397,98 +415,132 @@ class MenuWindow(QDialog):
 
     # --- painting ---
 
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        t = time.time() - self._t0
+    def _deco_tick(self):
+        """Repaint only the animated header and footer bands."""
         w, h = self.width(), self.height()
+        self.update(QRect(0, 0, w, 175))
+        self.update(QRect(0, h - self.FOOTER_H, w, self.FOOTER_H))
 
-        # Card background with rounded corners
+    def _ensure_bg_cache(self):
+        """Render the static card background (gradient + border) once."""
+        if self._bg_cache is not None:
+            return
+        w, h = self.width(), self.height()
+        dpr = self.devicePixelRatioF()
+        pm = QPixmap(int(w * dpr), int(h * dpr))
+        pm.setDevicePixelRatio(dpr)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         path = QPainterPath()
         path.addRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 18, 18)
         grad = QLinearGradient(0, 0, 0, h)
         grad.setColorAt(0, BG_TOP)
         grad.setColorAt(1, BG_BOTTOM)
         p.fillPath(path, QBrush(grad))
-        p.setClipPath(path)
-
-        # Soft accent glow behind the header emblem
-        pulse = 0.7 + 0.3 * math.sin(t * 1.6)
-        glow = QRadialGradient(QPointF(w / 2, 64), 95)
-        glow.setColorAt(0, _with_alpha(ACCENT, int(30 * pulse)))
-        glow.setColorAt(1, _with_alpha(ACCENT, 0))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(glow))
-        p.drawRect(QRectF(0, 0, w, 170))
-
-        # Drifting chess pieces
-        for pc in self._pieces:
-            y = ((pc["y"] - t * pc["speed"]) % 1.15) - 0.075
-            x = pc["x"] * w + math.sin(t * 0.7 + pc["phase"]) * pc["sway"]
-            p.setFont(QFont("Arial", int(pc["size"])))
-            p.setPen(QColor(200, 215, 240, pc["alpha"]))
-            p.drawText(QPointF(x, y * h), pc["ch"])
-
-        # Knight emblem with glow pulse
-        knight_size = 40 + 2 * math.sin(t * 1.6)
-        p.setFont(QFont("Arial", int(knight_size)))
-        p.setPen(_with_alpha(ACCENT, 80))
-        p.drawText(QRectF(0, 14, w, 64), Qt.AlignmentFlag.AlignCenter, "♞")
-        p.setPen(QColor(232, 241, 255))
-        p.drawText(QRectF(0, 12, w, 64), Qt.AlignmentFlag.AlignCenter, "♞")
-
-        # Title with a moving shimmer
-        title_font = QFont("Helvetica Neue", 23, QFont.Weight.Black)
-        title_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 5)
-        p.setFont(title_font)
-        p.setPen(QPen(QBrush(self._shimmer(w, t, QColor(214, 226, 243),
-                                           QColor(255, 255, 255), ACCENT)), 0))
-        p.drawText(QRectF(0, 84, w, 34), Qt.AlignmentFlag.AlignCenter,
-                   "CHESS VISION")
-
-        # Subtitle
-        sub_font = QFont("Helvetica Neue", 10)
-        sub_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1)
-        p.setFont(sub_font)
-        p.setPen(TEXT_DIM)
-        p.drawText(QRectF(0, 118, w, 20), Qt.AlignmentFlag.AlignCenter,
-                   "Real-time move intelligence · Stockfish inside")
-
-        # --- footer ---
-        fy = h - self.FOOTER_H
-
-        sep = QLinearGradient(0, 0, w, 0)
-        sep.setColorAt(0, _with_alpha(ACCENT, 0))
-        sep.setColorAt(0.5, _with_alpha(ACCENT, 90))
-        sep.setColorAt(1, _with_alpha(ACCENT, 0))
-        p.setPen(QPen(QBrush(sep), 1))
-        p.drawLine(QPointF(30, fy + 6), QPointF(w - 30, fy + 6))
-
-        tiny = QFont("Helvetica Neue", 8)
-        tiny.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
-        p.setFont(tiny)
-        p.setPen(QColor(107, 120, 144))
-        p.drawText(QRectF(0, fy + 14, w, 14), Qt.AlignmentFlag.AlignCenter,
-                   "DEVELOPED & OWNED BY")
-
-        brand_font = QFont("Helvetica Neue", 14, QFont.Weight.Black)
-        brand_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 3)
-        p.setFont(brand_font)
-        p.setPen(QPen(QBrush(self._shimmer(w, t * 0.8, GOLD,
-                                           QColor(255, 232, 160), GOLD)), 0))
-        p.drawText(QRectF(0, fy + 30, w, 22), Qt.AlignmentFlag.AlignCenter,
-                   "KRYSKATA-C")
-
-        p.setFont(QFont("Helvetica Neue", 8))
-        p.setPen(QColor(85, 97, 122))
-        p.drawText(QRectF(0, fy + 56, w, 14), Qt.AlignmentFlag.AlignCenter,
-                   "© 2026 Kryskata-C · All rights reserved")
-
-        # Card border
-        p.setClipping(False)
         p.setPen(QPen(_with_alpha(ACCENT, 70), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 18, 18)
+        p.end()
+        self._bg_cache = pm
+
+    def _particle_font(self, size: int) -> QFont:
+        font = self._particle_fonts.get(size)
+        if font is None:
+            font = QFont("Arial", size)
+            self._particle_fonts[size] = font
+        return font
+
+    def paintEvent(self, event):
+        self._ensure_bg_cache()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        t = time.time() - self._t0
+        w, h = self.width(), self.height()
+        dirty = event.rect()
+
+        p.drawPixmap(0, 0, self._bg_cache)
+
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 18, 18)
+        p.setClipPath(clip)
+
+        header = QRect(0, 0, w, 175)
+        footer = QRect(0, h - self.FOOTER_H, w, self.FOOTER_H)
+
+        # Drifting chess pieces (confined to header/footer bands)
+        for pc in self._pieces:
+            band_top, band_bot = pc["band"]
+            span = band_bot - band_top
+            yfrac = band_top + ((pc["y"] - t * pc["speed"] / span) % 1.0) * span
+            y = yfrac * h
+            strip = header if band_bot <= 0.5 else footer
+            if not dirty.intersects(strip):
+                continue
+            x = pc["x"] * w + math.sin(t * 0.7 + pc["phase"]) * pc["sway"]
+            p.setFont(self._particle_font(int(pc["size"])))
+            p.setPen(QColor(200, 215, 240, pc["alpha"]))
+            p.drawText(QPointF(x, y), pc["ch"])
+
+        if dirty.intersects(header):
+            # Soft accent glow behind the header emblem
+            pulse = 0.7 + 0.3 * math.sin(t * 1.6)
+            glow = QRadialGradient(QPointF(w / 2, 64), 95)
+            glow.setColorAt(0, _with_alpha(ACCENT, int(30 * pulse)))
+            glow.setColorAt(1, _with_alpha(ACCENT, 0))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(glow))
+            p.drawRect(QRectF(0, 0, w, 170))
+
+            # Knight emblem with glow pulse
+            self._knight_font.setPointSize(int(40 + 2 * math.sin(t * 1.6)))
+            p.setFont(self._knight_font)
+            p.setPen(_with_alpha(ACCENT, 80))
+            p.drawText(QRectF(0, 14, w, 64), Qt.AlignmentFlag.AlignCenter, "♞")
+            p.setPen(QColor(232, 241, 255))
+            p.drawText(QRectF(0, 12, w, 64), Qt.AlignmentFlag.AlignCenter, "♞")
+
+            # Title with a moving shimmer
+            p.setFont(self._title_font)
+            p.setPen(QPen(QBrush(self._shimmer(
+                w, t, QColor(214, 226, 243), QColor(255, 255, 255), ACCENT,
+            )), 0))
+            p.drawText(QRectF(0, 84, w, 34), Qt.AlignmentFlag.AlignCenter,
+                       "CHESS VISION")
+
+            # Subtitle
+            p.setFont(self._sub_font)
+            p.setPen(TEXT_DIM)
+            p.drawText(QRectF(0, 118, w, 20), Qt.AlignmentFlag.AlignCenter,
+                       "Real-time move intelligence · Stockfish inside")
+
+        if dirty.intersects(footer):
+            fy = h - self.FOOTER_H
+
+            sep = QLinearGradient(0, 0, w, 0)
+            sep.setColorAt(0, _with_alpha(ACCENT, 0))
+            sep.setColorAt(0.5, _with_alpha(ACCENT, 90))
+            sep.setColorAt(1, _with_alpha(ACCENT, 0))
+            p.setPen(QPen(QBrush(sep), 1))
+            p.drawLine(QPointF(30, fy + 6), QPointF(w - 30, fy + 6))
+
+            p.setFont(self._tiny_font)
+            p.setPen(QColor(107, 120, 144))
+            p.drawText(QRectF(0, fy + 14, w, 14), Qt.AlignmentFlag.AlignCenter,
+                       "DEVELOPED & OWNED BY")
+
+            p.setFont(self._brand_font)
+            p.setPen(QPen(QBrush(self._shimmer(
+                w, t * 0.8, GOLD, QColor(255, 232, 160), GOLD,
+            )), 0))
+            p.drawText(QRectF(0, fy + 30, w, 22), Qt.AlignmentFlag.AlignCenter,
+                       "KRYSKATA-C")
+
+            p.setFont(self._copy_font)
+            p.setPen(QColor(85, 97, 122))
+            p.drawText(QRectF(0, fy + 56, w, 14), Qt.AlignmentFlag.AlignCenter,
+                       "© 2026 Kryskata-C · All rights reserved")
+
         p.end()
 
     @staticmethod
@@ -507,6 +559,10 @@ class MenuWindow(QDialog):
         return grad
 
     # --- window interactions ---
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._deco_timer.stop()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
