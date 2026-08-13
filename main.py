@@ -192,7 +192,10 @@ class ChessVision:
         """Infer whose turn it is by comparing old and new piece positions.
 
         Looks at which color's pieces appeared on new squares to determine
-        who just moved. Returns the color whose turn it is NOW.
+        who just moved. Returns the color whose turn it is NOW, "same" if
+        the side to move is unchanged (an even number of half-moves merged
+        into one update, or pieces lifted mid-drag), or None if the diff is
+        too noisy to trust.
         """
         old_rows = old_fen_pos.split("/")
         new_rows = new_fen_pos.split("/")
@@ -233,7 +236,16 @@ class ChessVision:
         elif black_arrived > white_arrived:
             return "w"  # black moved -> white's turn
 
-        return None
+        # No arrivals at all: a piece was lifted mid-drag or occluded —
+        # not a completed move. Let the caller's validity fallback decide.
+        if white_arrived == 0:
+            return None
+
+        # Equal non-zero arrivals: a fast move + reply (premove) merged
+        # into one update. Every completed half-move lands a piece
+        # somewhere, so an equal count means an even number of half-moves
+        # — the side to move hasn't changed.
+        return "same"
 
     def _reset_game_state(self):
         """Reset all per-game state for a new game."""
@@ -387,7 +399,9 @@ class ChessVision:
                 inferred = self._infer_current_turn(
                     self.last_fen_position, fen_position
                 )
-                if inferred is not None:
+                if inferred == "same":
+                    pass  # side to move unchanged
+                elif inferred is not None:
                     self.current_turn = inferred
                 else:
                     # Fallback: validate both turns with chess rules
