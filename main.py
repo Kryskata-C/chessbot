@@ -31,6 +31,8 @@ from overlay import OverlayWindow, MenuWindow, DebugBoardWindow
 
 SCAN_INTERVAL_MS = 400
 
+STARTING_PLACEMENT = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+
 # Status colors
 BLUE = QColor(0, 120, 255)
 GREEN = QColor(30, 180, 60)
@@ -105,6 +107,11 @@ class ChessVision:
         # disappeared (someone is dragging), with a stale-out safety cap
         self._lift_skips: int = 0
         self._MAX_LIFT_SKIPS = 6
+        # Tracked game state: recognition identifies which legal move was
+        # played; turn/castling/en-passant then come from real game state
+        # instead of being inferred per scan.
+        self.game_board: chess.Board | None = None
+        self._last_analyzed_fen: str | None = None
 
         # Wire up menu → start
         self.menu.color_selected.connect(self._on_color_selected)
@@ -273,7 +280,160 @@ class ChessVision:
         self._game_over = False
         self._en_passant = "-"
         self._lift_skips = 0
+        self.game_board = None
+        self._last_analyzed_fen = None
         print("Game state reset for new game.")
+
+    # ------------------------------------------------------------------
+    # Game tracking: keep a real chess.Board and use recognition to
+    # identify which legal move(s) were played. Turn, castling, and
+    # en passant then follow exactly from game state, so a single misread
+    # square can't desync the turn tracker.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _expand_placement(placement: str) -> list[str | None]:
+        """Expand a FEN placement to a flat 64-list (a8..h1 order)."""
+        out: list[str | None] = []
+        for row in placement.split("/"):
+            for ch in row:
+                if ch.isdigit():
+                    out.extend([None] * int(ch))
+                else:
+                    out.append(ch)
+        return out
+
+    @classmethod
+    def _count_mismatches(cls, a: str, b: str) -> int:
+        ea, eb = cls._expand_placement(a), cls._expand_placement(b)
+        if len(ea) != 64 or len(eb) != 64:
+            return 99
+        return sum(1 for x, y in zip(ea, eb) if x != y)
+
+    @classmethod
+    def _changed_squares(cls, a: str, b: str) -> set[int]:
+        """chess.Square indices that differ between two placements."""
+        ea, eb = cls._expand_placement(a), cls._expand_placement(b)
+        changed: set[int] = set()
+        if len(ea) != 64 or len(eb) != 64:
+            return changed
+        for i in range(64):
+            if ea[i] != eb[i]:
+                row, col = divmod(i, 8)  # row 0 = rank 8
+                changed.add(chess.square(col, 7 - row))
+        return changed
+
+    def _match_moves(self, target: str) -> list[chess.Move] | None:
+        """Find the legal move sequence (1 or 2 plies) that turns the
+        tracked position into the recognized placement.
+
+        The 2-ply search covers a fast move + reply merging into one scan
+        update. The fuzzy pass tolerates one misread square (e.g. wrong
+        piece color under chess.com's move highlight), trusting the move
+        whose outcome is uniquely closest to what was recognized.
+        """
+        b = self.game_board
+
+        # Exact single move
+        for mv in b.legal_moves:
+            b.push(mv)
+            match = b.board_fen() == target
+            b.pop()
+            if match:
+                return [mv]
+
+        # Exact move + reply. The first move must touch a changed square
+        # (its origin square always ends up changed).
+        changed = self._changed_squares(b.board_fen(), target)
+        for m1 in list(b.legal_moves):
+            if m1.from_square not in changed and m1.to_square not in changed:
+                continue
+            b.push(m1)
+            found = None
+            for m2 in b.legal_moves:
+                b.push(m2)
+                if b.board_fen() == target:
+                    found = m2
+                b.pop()
+                if found:
+                    break
+            b.pop()
+            if found:
+                return [m1, found]
+
+        # Fuzzy single move: allow one misread square, require uniqueness
+        best, best_n, second_n = None, 99, 99
+        for mv in b.legal_moves:
+            b.push(mv)
+            n = self._count_mismatches(b.board_fen(), target)
+            b.pop()
+            if n < best_n:
+                best, second_n, best_n = mv, best_n, n
+            elif n < second_n:
+                second_n = n
+        if best is not None and best_n <= 1 and second_n > best_n:
+            print(f"Fuzzy-matched {best.uci()} ({best_n} misread square)")
+            return [best]
+
+        return None
+
+    def _init_game_state(self, fen_position: str):
+        """(Re)build the tracked game from a raw recognized placement."""
+        if fen_position == STARTING_PLACEMENT:
+            turn = "w"
+        elif self.last_fen_position is not None:
+            inferred = self._infer_current_turn(
+                self.last_fen_position, fen_position
+            )
+            if inferred == "same":
+                turn = self.current_turn
+            elif inferred is not None:
+                turn = inferred
+            else:
+                # Fallback: validate both turns with chess rules
+                turn = "b" if self.current_turn == "w" else "w"
+                for candidate in [turn, self.current_turn]:
+                    try:
+                        b = chess.Board(
+                            f"{fen_position} {candidate} "
+                            f"{infer_castling(fen_position)} - 0 1"
+                        )
+                        if b.is_valid():
+                            turn = candidate
+                            break
+                    except Exception:
+                        pass
+        else:
+            turn = self.current_turn
+
+        self.current_turn = turn
+        try:
+            self.game_board = chess.Board(
+                f"{fen_position} {turn} {infer_castling(fen_position)} - 0 1"
+            )
+        except Exception:
+            self.game_board = None
+        print(f"Game tracking (re)synced: turn={turn}")
+
+    def _track_position(self, fen_position: str):
+        """Advance the tracked game to match a newly recognized placement."""
+        b = self.game_board
+        if b.board_fen() == fen_position:
+            return
+        # A placement differing on a single square can't be a completed
+        # move (every move changes at least two squares) — recognition
+        # noise; keep the tracked state.
+        if self._count_mismatches(b.board_fen(), fen_position) <= 1:
+            return
+        moves = self._match_moves(fen_position)
+        if moves is None:
+            print("Recognized position doesn't follow legally — resyncing.")
+            self._init_game_state(fen_position)
+            return
+        for mv in moves:
+            b.push(mv)
+        print(f"Tracked: {' '.join(m.uci() for m in moves)}")
+        self.current_turn = "w" if b.turn == chess.WHITE else "b"
 
     def _infer_en_passant(self, old_fen_pos: str, new_fen_pos: str) -> str:
         """Infer en passant target square from a pawn double-push."""
@@ -375,8 +535,7 @@ class ChessVision:
                 return
 
             # New game detection: piece count jumps back near 32
-            STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
-            if self._game_over and piece_count >= 30 and fen_position == STARTING_FEN:
+            if self._game_over and piece_count >= 30 and fen_position == STARTING_PLACEMENT:
                 self._reset_game_state()
                 self.overlay.set_status("New game detected!", GREEN, duration_ms=3000)
                 print("New game detected — state reset.")
@@ -430,33 +589,15 @@ class ChessVision:
                         return
             self._lift_skips = 0
 
-            # Determine whose turn it is by analyzing what changed
-            if self.last_fen_position is not None:
-                inferred = self._infer_current_turn(
-                    self.last_fen_position, fen_position
-                )
-                if inferred == "same":
-                    pass  # side to move unchanged
-                elif inferred is not None:
-                    self.current_turn = inferred
-                else:
-                    # Fallback: validate both turns with chess rules
-                    toggled = "b" if self.current_turn == "w" else "w"
-                    picked = toggled
-                    for candidate in [toggled, self.current_turn]:
-                        try:
-                            castling = infer_castling(fen_position)
-                            b = chess.Board(
-                                f"{fen_position} {candidate} {castling} - 0 1"
-                            )
-                            if b.is_valid():
-                                picked = candidate
-                                break
-                        except Exception:
-                            pass
-                    self.current_turn = picked
+            # Track the game: identify which legal move(s) explain the new
+            # placement; falls back to a hard resync when nothing does.
+            if self.game_board is None:
+                self._init_game_state(fen_position)
+            else:
+                self._track_position(fen_position)
 
-            # Infer en passant from pawn double-pushes
+            # Infer en passant from pawn double-pushes (only used by the
+            # string-FEN fallback when game tracking is unavailable)
             if self.last_fen_position is not None:
                 self._en_passant = self._infer_en_passant(
                     self.last_fen_position, fen_position
@@ -464,24 +605,28 @@ class ChessVision:
             else:
                 self._en_passant = "-"
 
-            # Check for game over (only trust it if the position is valid)
-            castling_check = infer_castling(fen_position)
-            try:
-                check_board = chess.Board(
-                    f"{fen_position} {self.current_turn} {castling_check} {self._en_passant} 0 1"
-                )
-                if check_board.is_valid() and check_board.is_game_over():
-                    self._game_over = True
-                    result = check_board.result()
-                    self.overlay.set_status(
-                        f"Game over ({result}) — waiting for new game...", ORANGE
+            # Check for game over
+            game_over_board = self.game_board
+            if game_over_board is None:
+                try:
+                    cb = chess.Board(
+                        f"{fen_position} {self.current_turn} "
+                        f"{infer_castling(fen_position)} {self._en_passant} 0 1"
                     )
-                    self.overlay.clear_highlights()
-                    self.last_fen_position = fen_position
-                    print(f"Game over detected: {result}")
-                    return
-            except Exception:
-                pass
+                    if cb.is_valid():
+                        game_over_board = cb
+                except Exception:
+                    pass
+            if game_over_board is not None and game_over_board.is_game_over():
+                self._game_over = True
+                result = game_over_board.result()
+                self.overlay.set_status(
+                    f"Game over ({result}) — waiting for new game...", ORANGE
+                )
+                self.overlay.clear_highlights()
+                self.last_fen_position = fen_position
+                print(f"Game over detected: {result}")
+                return
 
             # Estimate opponent ELO when opponent just moved
             if (self.last_fen_position is not None
@@ -536,9 +681,17 @@ class ChessVision:
                 self.overlay.clear_highlights()
                 return
 
-            # Analyze for the player's turn
-            castling = infer_castling(fen_position)
-            fen = f"{fen_position} {self.player_color} {castling} {self._en_passant} 0 1"
+            # Analyze for the player's turn. Prefer the tracked game state:
+            # exact castling/en-passant, and immune to one-square misreads.
+            if self.game_board is not None:
+                fen = self.game_board.fen()
+            else:
+                castling = infer_castling(fen_position)
+                fen = f"{fen_position} {self.player_color} {castling} {self._en_passant} 0 1"
+
+            if fen == self._last_analyzed_fen:
+                return  # already suggested a move for this exact position
+            self._last_analyzed_fen = fen
             print(f"FEN: {fen}  ({piece_count} pieces)")
 
             chosen_move = self.move_selector.select_move(fen, piece_count)
