@@ -334,6 +334,16 @@ class ChessVision:
 
             fen_position = positions_to_fen(positions, "w").split(" ")[0]
 
+            # A king can never leave the board. If one is missing even after
+            # recovery, this scan is recognition noise (piece mid-drag,
+            # cursor/glow overlay) — Stockfish crashes on king-less FENs,
+            # so never accept or analyze such a position.
+            if "K" not in fen_position or "k" not in fen_position:
+                self.overlay.set_status(
+                    "Scan unclear — king not visible", ORANGE
+                )
+                return
+
             # New game detection: piece count jumps back near 32
             STARTING_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
             if self._game_over and piece_count >= 30 and fen_position == STARTING_FEN:
