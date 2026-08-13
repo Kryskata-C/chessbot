@@ -57,8 +57,22 @@ class ChessEngine:
                 print(f"Engine error after restart: {e2}")
                 return fallback
 
+    @staticmethod
+    def _fen_ok(fen: str) -> bool:
+        """Cheap sanity check: both kings must be on the board.
+
+        Stockfish hard-crashes on king-less positions, and the wrapper's
+        own validation raises — either way the call chain dies, so reject
+        these before touching the engine process.
+        """
+        placement = fen.split()[0]
+        return "K" in placement and "k" in placement
+
     def get_best_move(self, fen: str) -> str | None:
         """Get the best move for the given FEN position."""
+        if not self._fen_ok(fen):
+            print(f"Rejecting FEN without both kings: {fen}")
+            return None
         def _call():
             self.engine.set_fen_position(fen)
             return self.engine.get_best_move()
@@ -66,6 +80,9 @@ class ChessEngine:
 
     def get_top_moves(self, fen: str, n: int = 5) -> list[dict]:
         """Get the top N moves with evaluations for the given position."""
+        if not self._fen_ok(fen):
+            print(f"Rejecting FEN without both kings: {fen}")
+            return []
         def _call():
             self.engine.set_fen_position(fen)
             raw = self.engine.get_top_moves(n)
@@ -81,6 +98,9 @@ class ChessEngine:
 
     def get_evaluation(self, fen: str, depth: int = 10) -> int:
         """Evaluate a position and return score in centipawns from side-to-move POV."""
+        if not self._fen_ok(fen):
+            print(f"Rejecting FEN without both kings: {fen}")
+            return 0
         def _call():
             self.engine.set_fen_position(fen)
             result = self.engine.get_evaluation()
