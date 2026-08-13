@@ -19,7 +19,6 @@ from capture import capture_screen
 from board_detector import detect_board
 from piece_recognizer import (
     recognize_board,
-    detect_orientation,
     positions_to_fen,
     get_templates,
     reload_templates,
@@ -426,14 +425,26 @@ class ChessVision:
         if self._count_mismatches(b.board_fen(), fen_position) <= 1:
             return
         moves = self._match_moves(fen_position)
-        if moves is None:
-            print("Recognized position doesn't follow legally — resyncing.")
-            self._init_game_state(fen_position)
+        if moves is not None:
+            for mv in moves:
+                b.push(mv)
+            print(f"Tracked: {' '.join(m.uci() for m in moves)}")
+            self.current_turn = "w" if b.turn == chess.WHITE else "b"
             return
-        for mv in moves:
-            b.push(mv)
-        print(f"Tracked: {' '.join(m.uci() for m in moves)}")
-        self.current_turn = "w" if b.turn == chess.WHITE else "b"
+
+        # Takeback? (user pressed undo) — walk back through our own history
+        tmp = b.copy()
+        for k in range(1, min(6, len(b.move_stack)) + 1):
+            tmp.pop()
+            if tmp.board_fen() == fen_position:
+                for _ in range(k):
+                    b.pop()
+                print(f"Takeback detected — rewound {k} half-move(s)")
+                self.current_turn = "w" if b.turn == chess.WHITE else "b"
+                return
+
+        print("Recognized position doesn't follow legally — resyncing.")
+        self._init_game_state(fen_position)
 
     def _infer_en_passant(self, old_fen_pos: str, new_fen_pos: str) -> str:
         """Infer en passant target square from a pawn double-push."""
