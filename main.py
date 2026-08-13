@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import sys
 import signal
+import threading
+import time
 
 import chess
+import cv2
+import numpy as np
 
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QShortcut, QKeySequence, QColor
 from PyQt6.QtWidgets import QApplication
 
@@ -78,8 +82,20 @@ def infer_castling(fen_position: str) -> str:
     return rights if rights else "-"
 
 
-class ChessVision:
+class ChessVision(QObject):
+    """Scan/analysis pipeline split across threads.
+
+    Screen capture must stay on the GUI thread (macOS CoreGraphics display
+    enumeration fails from background threads), but it's cheap. The heavy
+    work — recognition and every engine call — runs on a worker thread that
+    consumes the latest captured frame, so overlay animations never stutter.
+    GUI updates are marshaled back through the sig_gui queued signal.
+    """
+
+    sig_gui = pyqtSignal(str, object)
+
     def __init__(self):
+        super().__init__()
         self.engine = ChessEngine(depth=12, threads=2)
         self.move_selector = HumanMoveSelector(self.engine)
         self.overlay = OverlayWindow()
@@ -92,7 +108,19 @@ class ChessVision:
         self.running = True
         self.has_templates = len(get_templates()) > 0
         self.elo_estimator = EloEstimator()
-        self.scan_timer: QTimer | None = None
+        self._scan_thread: threading.Thread | None = None
+        self._capture_timer: QTimer | None = None
+        self._frame_lock = threading.Lock()
+        self._latest_frame = None
+        self._latest_offset: tuple[int, int] = (0, 0)
+        self._frame_ready = threading.Event()
+        # Once the board is located, capture only its neighborhood
+        # (full-screen Retina grabs are ~5x more expensive)
+        self._capture_region: dict | None = None
+        self._monitor_bounds: dict | None = None
+        # Per-square brightness fingerprint of the last scanned board —
+        # lets us skip 200ms of template matching when nothing changed
+        self._last_cells: np.ndarray | None = None
         # Position stability: require same FEN for 2 scans before accepting
         self._pending_fen: str | None = None
         self._pending_count: int = 0
@@ -116,8 +144,44 @@ class ChessVision:
         self.visuals: dict = {}
         self._new_enemy_move: chess.Move | None = None
 
-        # Wire up menu → start
+        # Wire up menu → start, and worker thread → GUI updates
         self.menu.started.connect(self._on_started)
+        self.sig_gui.connect(self._apply_gui)
+
+    def _gui(self, op: str, payload: dict | None = None):
+        """Queue a GUI update from the scan thread."""
+        self.sig_gui.emit(op, payload or {})
+
+    def _status(self, text: str, color: QColor | None = None,
+                duration_ms: int = 0):
+        """Queue a status banner update from the scan thread."""
+        self._gui("status", {
+            "text": text, "color": color, "duration_ms": duration_ms,
+        })
+
+    def _apply_gui(self, op: str, payload: dict):
+        """Runs on the GUI thread: apply a queued overlay/debug update."""
+        if op == "status":
+            self.overlay.set_status(
+                payload["text"], payload.get("color"),
+                payload.get("duration_ms", 0),
+            )
+        elif op == "geo":
+            self.overlay.set_board_geometry(payload["board"], payload["wob"])
+        elif op == "suggestion":
+            self.overlay.show_suggestion(**payload)
+        elif op == "threats":
+            self.overlay.set_threats(payload["squares"])
+        elif op == "trail":
+            self.overlay.flash_enemy_move(payload["move"])
+        elif op == "eval":
+            self.overlay.set_eval(payload["cp"])
+        elif op == "clear":
+            self.overlay.clear_highlights()
+        elif op == "reset_visuals":
+            self.overlay.reset_board_visuals()
+        elif op == "debug":
+            self.debug_board.set_positions(**payload)
 
     def _on_started(self, color: str, visuals: dict):
         """Called when the user picks a color + visuals and clicks Start."""
@@ -139,12 +203,55 @@ class ChessVision:
                 ORANGE,
             )
 
-        # Show overlay and debug board, start scanning
+        # Show overlay and debug board, then start the pipeline: a GUI-side
+        # timer captures frames, the worker thread does recognition + engine.
         self.overlay.show()
         self.debug_board.show()
-        self.scan_timer = QTimer()
-        self.scan_timer.timeout.connect(self.scan)
-        self.scan_timer.start(SCAN_INTERVAL_MS)
+        try:
+            from capture import get_monitor_info
+            self._monitor_bounds = get_monitor_info(1)
+        except Exception:
+            self._monitor_bounds = None
+        self._capture_timer = QTimer(self)
+        self._capture_timer.timeout.connect(self._capture_tick)
+        self._capture_timer.start(SCAN_INTERVAL_MS)
+        self._scan_thread = threading.Thread(
+            target=self._scan_loop, daemon=True
+        )
+        self._scan_thread.start()
+
+    def _capture_tick(self):
+        """GUI thread: grab a frame (board region when known) for the worker."""
+        if not self.running:
+            return
+        region = self._capture_region
+        try:
+            frame = capture_screen(region=region)
+        except Exception as e:
+            print(f"Capture error: {e}")
+            self._capture_region = None
+            return
+        offset = (region["left"], region["top"]) if region else (0, 0)
+        with self._frame_lock:
+            self._latest_frame = frame
+            self._latest_offset = offset
+        self._frame_ready.set()
+
+    def _scan_loop(self):
+        """Worker thread: process the newest frame as fast as it can keep up.
+
+        If analysis takes longer than the capture interval, intermediate
+        frames are simply replaced — the worker always sees the latest.
+        """
+        while self.running:
+            if not self._frame_ready.wait(timeout=1.0):
+                continue
+            self._frame_ready.clear()
+            with self._frame_lock:
+                frame = self._latest_frame
+                offset = self._latest_offset
+            if frame is not None:
+                self.scan(frame, offset)
 
     def auto_calibrate(self, screenshot, board):
         """Try to extract templates from a starting-position board."""
@@ -190,8 +297,9 @@ class ChessVision:
             reload_templates()
             self.has_templates = True
             print(f"Auto-calibrated: saved {saved} templates")
-            self.overlay.set_status(
-                f"Auto-calibrated {saved} piece templates!", GREEN, duration_ms=3000
+            self._status(
+                f"Auto-calibrated {saved} piece templates!", GREEN,
+                duration_ms=3000,
             )
         return saved
 
@@ -288,7 +396,7 @@ class ChessVision:
         self.game_board = None
         self._last_analyzed_fen = None
         self._new_enemy_move = None
-        self.overlay.reset_board_visuals()
+        self._gui("reset_visuals")
         print("Game state reset for new game.")
 
     # ------------------------------------------------------------------
@@ -532,53 +640,105 @@ class ChessVision:
 
         return "-"
 
-    def scan(self):
-        """One scan cycle: capture -> detect -> recognize -> analyze -> highlight."""
+    def _update_capture_region(self, board_abs: dict):
+        """Ask the capture side for just the board's neighborhood."""
+        pad = int(board_abs["square_size"])
+        x = int(board_abs["x"] - pad)
+        y = int(board_abs["y"] - pad)
+        w = int(board_abs["width"] + 2 * pad)
+        h = int(board_abs.get("height", board_abs["width"]) + 2 * pad)
+        mb = self._monitor_bounds
+        if mb:
+            x = max(mb["left"], x)
+            y = max(mb["top"], y)
+            w = min(w, mb["left"] + mb["width"] - x)
+            h = min(h, mb["top"] + mb["height"] - y)
+        else:
+            x, y = max(0, x), max(0, y)
+        if w > 0 and h > 0:
+            self._capture_region = {
+                "left": x, "top": y, "width": w, "height": h,
+            }
+
+    def scan(self, screenshot, offset: tuple[int, int] = (0, 0)):
+        """One scan cycle: detect -> recognize -> analyze -> highlight.
+
+        `screenshot` may be a region crop; `offset` maps its origin back
+        to absolute screen coordinates.
+        """
         if not self.running:
             return
 
         try:
-            screenshot = capture_screen()
+            ox, oy = offset
             board = detect_board(screenshot)
 
             if board is None:
                 self._cached_board = None
-                self.overlay.reset_board_visuals()
-                self.overlay.set_status("Scanning... no board found", BLUE)
+                self._capture_region = None  # fall back to full-screen grabs
+                self._last_cells = None
+                self._gui("reset_visuals")
+                self._status("Scanning... no board found", BLUE)
                 return
+
+            # Work in absolute screen coordinates for caching/overlay
+            board_abs = {**board, "x": board["x"] + ox, "y": board["y"] + oy}
 
             # Stabilize board coordinates: if the new detection is very close
             # to the cached one, reuse the cached coords to prevent jitter
             # that causes edge-square recognition noise.
             if self._cached_board is not None:
-                dx = abs(board["x"] - self._cached_board["x"])
-                dy = abs(board["y"] - self._cached_board["y"])
-                ds = abs(board["width"] - self._cached_board["width"])
+                dx = abs(board_abs["x"] - self._cached_board["x"])
+                dy = abs(board_abs["y"] - self._cached_board["y"])
+                ds = abs(board_abs["width"] - self._cached_board["width"])
                 if dx <= self._BOARD_DRIFT_THRESHOLD and \
                    dy <= self._BOARD_DRIFT_THRESHOLD and \
                    ds <= self._BOARD_DRIFT_THRESHOLD:
-                    board = self._cached_board
+                    board_abs = self._cached_board
                 else:
-                    self._cached_board = board
+                    self._cached_board = board_abs
             else:
-                self._cached_board = board
+                self._cached_board = board_abs
+            self._update_capture_region(board_abs)
+
+            # Frame-local coordinates for recognition on this screenshot
+            board = {**board_abs, "x": board_abs["x"] - ox,
+                     "y": board_abs["y"] - oy}
 
             if not self.has_templates:
-                self.overlay.set_status("Board found — calibrating...", ORANGE)
+                self._status("Board found — calibrating...", ORANGE)
                 self.auto_calibrate(screenshot, board)
                 if not self.has_templates:
-                    self.overlay.set_status(
+                    self._status(
                         "Board found but calibration failed — check starting position",
                         RED,
                     )
                 return
+
+            # Cheap change gate: compare per-square brightness against the
+            # previous scan and skip the expensive template matching
+            # (~200ms) when the board hasn't visibly changed. Disabled
+            # while a pending position is stabilizing.
+            bx, by = int(board["x"]), int(board["y"])
+            bs = int(board["width"])
+            crop = screenshot[max(0, by):by + bs, max(0, bx):bx + bs]
+            if crop.size:
+                gray = cv2.cvtColor(cv2.resize(crop, (64, 64)),
+                                    cv2.COLOR_BGR2GRAY)
+                cells = gray.reshape(8, 8, 8, 8).mean(axis=(1, 3))
+                if (self._last_cells is not None
+                        and self._pending_fen is None
+                        and float(np.abs(cells - self._last_cells).max()) < 5.0):
+                    self._last_cells = cells
+                    return  # board visually unchanged — nothing to do
+                self._last_cells = cells
 
             positions = recognize_board(screenshot, board)
             # The player's pieces are always at the bottom on chess.com, so
             # orientation follows from the chosen color. Never guess it from
             # piece placement — that flips in endgames when pieces advance.
             white_on_bottom = self.player_color == "w"
-            self.overlay.set_board_geometry(board, white_on_bottom)
+            self._gui("geo", {"board": board_abs, "wob": white_on_bottom})
 
             piece_count = sum(
                 1 for row in positions for p in row if p is not None
@@ -593,23 +753,19 @@ class ChessVision:
             # cursor/glow overlay) — Stockfish crashes on king-less FENs,
             # so never accept or analyze such a position.
             if "K" not in fen_position or "k" not in fen_position:
-                self.overlay.set_status(
-                    "Scan unclear — king not visible", ORANGE
-                )
+                self._status("Scan unclear — king not visible", ORANGE)
                 return
 
             # New game detection: piece count jumps back near 32
             if self._game_over and piece_count >= 30 and fen_position == STARTING_PLACEMENT:
                 self._reset_game_state()
-                self.overlay.set_status("New game detected!", GREEN, duration_ms=3000)
+                self._status("New game detected!", GREEN, duration_ms=3000)
                 print("New game detected — state reset.")
                 return
 
             # In game-over state, keep scanning but skip analysis
             if self._game_over:
-                self.overlay.set_status(
-                    "Game over — waiting for new game...", ORANGE
-                )
+                self._status("Game over — waiting for new game...", ORANGE)
                 return
 
             # No change from accepted position — nothing to do
@@ -647,9 +803,7 @@ class ChessVision:
                     if (changed > 0 and w_arr == 0 and b_arr == 0
                             and self._lift_skips < self._MAX_LIFT_SKIPS):
                         self._lift_skips += 1
-                        self.overlay.set_status(
-                            "Piece lifted — waiting for the move", BLUE
-                        )
+                        self._status("Piece lifted — waiting for the move", BLUE)
                         return
             self._lift_skips = 0
 
@@ -662,9 +816,9 @@ class ChessVision:
 
             # Feed the overlay: opponent's last move trail + threat radar
             if self._new_enemy_move is not None:
-                self.overlay.flash_enemy_move(self._new_enemy_move.uci())
+                self._gui("trail", {"move": self._new_enemy_move.uci()})
                 self._new_enemy_move = None
-            self.overlay.set_threats(self._compute_threats())
+            self._gui("threats", {"squares": self._compute_threats()})
 
             # Infer en passant from pawn double-pushes (only used by the
             # string-FEN fallback when game tracking is unavailable)
@@ -690,10 +844,10 @@ class ChessVision:
             if game_over_board is not None and game_over_board.is_game_over():
                 self._game_over = True
                 result = game_over_board.result()
-                self.overlay.set_status(
+                self._status(
                     f"Game over ({result}) — waiting for new game...", ORANGE
                 )
-                self.overlay.reset_board_visuals()
+                self._gui("reset_visuals")
                 self.last_fen_position = fen_position
                 print(f"Game over detected: {result}")
                 return
@@ -718,7 +872,7 @@ class ChessVision:
                     self.elo_estimator.record_move(cpl)
                     # eval_after is from the player's POV — flip for White POV
                     white_cp = eval_after if self.player_color == "w" else -eval_after
-                    self.overlay.set_eval(white_cp)
+                    self._gui("eval", {"cp": white_cp})
                 except Exception as e:
                     print(f"ELO estimation error: {e}")
 
@@ -730,28 +884,32 @@ class ChessVision:
             self.move_selector.set_opponent_elo(elo_est)
 
             # Update debug board GUI
-            self.debug_board.set_positions(
-                positions, white_on_bottom, self.current_turn, piece_count,
-                estimated_elo=elo_est, opponent_acpl=acpl,
-                bot_accuracy=self.move_selector.get_accuracy(),
-                bot_cpl=self.move_selector.get_avg_cpl(),
-            )
+            self._gui("debug", {
+                "positions": positions,
+                "white_on_bottom": white_on_bottom,
+                "turn": self.current_turn,
+                "piece_count": piece_count,
+                "estimated_elo": elo_est,
+                "opponent_acpl": acpl,
+                "bot_accuracy": self.move_selector.get_accuracy(),
+                "bot_cpl": self.move_selector.get_avg_cpl(),
+            })
 
             if piece_count < 4:
-                self.overlay.set_status(
+                self._status(
                     f"Board found — only {piece_count} pieces detected",
                     ORANGE,
                 )
-                self.overlay.clear_highlights()
+                self._gui("clear")
                 return
 
             # Skip analysis on opponent's turn
             if self.current_turn != self.player_color:
                 color_name = "White" if self.player_color == "w" else "Black"
-                self.overlay.set_status(
+                self._status(
                     f"Opponent's turn (you are {color_name})", BLUE
                 )
-                self.overlay.clear_highlights()
+                self._gui("clear")
                 return
 
             # Analyze for the player's turn. Prefer the tracked game state:
@@ -769,21 +927,19 @@ class ChessVision:
 
             chosen_move = self.move_selector.select_move(fen, piece_count)
             if chosen_move is None:
-                self.overlay.set_status("No legal moves found", ORANGE)
-                self.overlay.clear_highlights()
+                self._status("No legal moves found", ORANGE)
+                self._gui("clear")
                 return
 
             self.last_move = chosen_move
             print(f"Suggested move: {chosen_move}")
 
             self._show_suggestion(chosen_move, fen)
-            self.overlay.set_status(
-                f"Move: {chosen_move}", GREEN, duration_ms=4000
-            )
+            self._status(f"Move: {chosen_move}", GREEN, duration_ms=4000)
 
         except Exception as e:
             print(f"Scan error: {e}")
-            self.overlay.set_status(f"Error: {e}", RED, duration_ms=5000)
+            self._status(f"Error: {e}", RED, duration_ms=5000)
 
     def _visual_on(self, key: str) -> bool:
         return self.visuals.get(key, True)
@@ -827,24 +983,27 @@ class ChessVision:
                 if m["move"] != chosen_move
             ]
 
-        self.overlay.show_suggestion(
-            chosen_move,
-            piece_symbol=piece_sym,
-            crit=self.move_selector.last_criticality,
-            is_capture=is_capture,
-            is_check=is_check,
-            pv=pv,
-            candidates=candidates,
-        )
+        self._gui("suggestion", {
+            "move_uci": chosen_move,
+            "piece_symbol": piece_sym,
+            "crit": self.move_selector.last_criticality,
+            "is_capture": is_capture,
+            "is_check": is_check,
+            "pv": pv,
+            "candidates": candidates,
+        })
 
         # Eval bar from the fresh analysis (player POV -> White POV)
         best_eval = self.move_selector.last_best_eval
         if best_eval is not None:
             white_cp = best_eval if self.player_color == "w" else -best_eval
-            self.overlay.set_eval(white_cp)
+            self._gui("eval", {"cp": white_cp})
 
     def stop(self):
         self.running = False
+        self._frame_ready.set()  # unblock the worker so it can exit
+        if self._capture_timer is not None:
+            self._capture_timer.stop()
         self.overlay.clear_highlights()
         QApplication.quit()
 
