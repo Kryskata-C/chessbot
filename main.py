@@ -101,6 +101,10 @@ class ChessVision:
         # Board coordinate cache — reuse if detection is close to last known
         self._cached_board: dict | None = None
         self._BOARD_DRIFT_THRESHOLD = 5  # max pixel drift before re-caching
+        # Piece-lifted guard: don't accept boards where pieces only
+        # disappeared (someone is dragging), with a stale-out safety cap
+        self._lift_skips: int = 0
+        self._MAX_LIFT_SKIPS = 6
 
         # Wire up menu → start
         self.menu.color_selected.connect(self._on_color_selected)
@@ -188,14 +192,12 @@ class ChessVision:
         except Exception:
             return False
 
-    def _infer_current_turn(self, old_fen_pos: str, new_fen_pos: str) -> str | None:
-        """Infer whose turn it is by comparing old and new piece positions.
+    @staticmethod
+    def _diff_stats(old_fen_pos: str, new_fen_pos: str) -> tuple[int, int, int] | None:
+        """Compare two piece placements.
 
-        Looks at which color's pieces appeared on new squares to determine
-        who just moved. Returns the color whose turn it is NOW, "same" if
-        the side to move is unchanged (an even number of half-moves merged
-        into one update, or pieces lifted mid-drag), or None if the diff is
-        too noisy to trust.
+        Returns (changed_squares, white_arrivals, black_arrivals),
+        or None if either placement is malformed.
         """
         old_rows = old_fen_pos.split("/")
         new_rows = new_fen_pos.split("/")
@@ -227,6 +229,21 @@ class ChessVision:
                         else:
                             black_arrived += 1
 
+        return changed, white_arrived, black_arrived
+
+    def _infer_current_turn(self, old_fen_pos: str, new_fen_pos: str) -> str | None:
+        """Infer whose turn it is by comparing old and new piece positions.
+
+        Looks at which color's pieces appeared on new squares to determine
+        who just moved. Returns the color whose turn it is NOW, "same" if
+        the side to move is unchanged (an even number of half-moves merged
+        into one update), or None if the diff is too noisy to trust.
+        """
+        stats = self._diff_stats(old_fen_pos, new_fen_pos)
+        if stats is None:
+            return None
+        changed, white_arrived, black_arrived = stats
+
         # Too many changes = recognition noise, not a real move
         if changed > 6:
             return None
@@ -255,6 +272,7 @@ class ChessVision:
         self.current_turn = "w"
         self._game_over = False
         self._en_passant = "-"
+        self._lift_skips = 0
         print("Game state reset for new game.")
 
     def _infer_en_passant(self, old_fen_pos: str, new_fen_pos: str) -> str:
@@ -393,6 +411,24 @@ class ChessVision:
             # Position is stable — accept it
             self._pending_fen = None
             self._pending_count = 0
+
+            # A board where pieces only disappeared is not a position —
+            # someone is holding a piece mid-drag. Accepting it poisons the
+            # diff baseline and desyncs turn tracking, so wait for the
+            # piece to land (with a stale-out cap in case a piece is
+            # genuinely lost to recognition).
+            if self.last_fen_position is not None:
+                stats = self._diff_stats(self.last_fen_position, fen_position)
+                if stats is not None:
+                    changed, w_arr, b_arr = stats
+                    if (changed > 0 and w_arr == 0 and b_arr == 0
+                            and self._lift_skips < self._MAX_LIFT_SKIPS):
+                        self._lift_skips += 1
+                        self.overlay.set_status(
+                            "Piece lifted — waiting for the move", BLUE
+                        )
+                        return
+            self._lift_skips = 0
 
             # Determine whose turn it is by analyzing what changed
             if self.last_fen_position is not None:
