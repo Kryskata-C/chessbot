@@ -10,6 +10,10 @@ import chess
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
 TEMPLATE_SIZE = 80
 MATCH_THRESHOLD = 0.55
+# Relaxed threshold used only when a king is missing from the board.
+# Overlays like chess.com's red check-glow can drag the king's normal
+# match score below MATCH_THRESHOLD, making the king "vanish".
+KING_RECOVERY_THRESHOLD = 0.25
 
 # Base piece names -> FEN symbols
 PIECE_NAMES = {
@@ -98,6 +102,62 @@ def recognize_square(square_img: np.ndarray) -> str | None:
     return None
 
 
+def _square_image(screenshot: np.ndarray, board: dict, row: int, col: int) -> np.ndarray | None:
+    """Crop one square from the screenshot, clamped to image bounds."""
+    sq = board["square_size"]
+    img_h, img_w = screenshot.shape[:2]
+    x = round(board["x"] + col * sq)
+    y = round(board["y"] + row * sq)
+    w = round(sq)
+    h = round(sq)
+    x = max(0, min(x, img_w - 1))
+    y = max(0, min(y, img_h - 1))
+    w = min(w, img_w - x)
+    h = min(h, img_h - y)
+    square_img = screenshot[y : y + h, x : x + w]
+    return square_img if square_img.size > 0 else None
+
+
+def _recover_missing_king(
+    screenshot: np.ndarray, board: dict,
+    positions: list[list[str | None]], king_sym: str,
+) -> bool:
+    """Place a missing king on the best-matching empty-looking square.
+
+    A king can never actually leave the board, so if recognition lost one
+    (check-glow, hover effects), rematch king templates over the squares
+    that read as empty using a relaxed threshold. Squares already holding
+    a recognized piece are never overridden.
+    """
+    king_templates = [t for t in get_templates() if t[1] == king_sym]
+    if not king_templates:
+        return False
+
+    best_score = KING_RECOVERY_THRESHOLD
+    best_rc: tuple[int, int] | None = None
+    for row in range(8):
+        for col in range(8):
+            if positions[row][col] is not None:
+                continue
+            square_img = _square_image(screenshot, board, row, col)
+            if square_img is None:
+                continue
+            square_resized = cv2.resize(square_img, (TEMPLATE_SIZE, TEMPLATE_SIZE))
+            for _base, _fen, tmpl in king_templates:
+                score = cv2.matchTemplate(
+                    square_resized, tmpl, cv2.TM_CCOEFF_NORMED
+                ).max()
+                if score > best_score:
+                    best_score = score
+                    best_rc = (row, col)
+
+    if best_rc is not None:
+        positions[best_rc[0]][best_rc[1]] = king_sym
+        print(f"Recovered missing {king_sym!r} at row={best_rc[0]} col={best_rc[1]} (score {best_score:.2f})")
+        return True
+    return False
+
+
 def recognize_board(screenshot: np.ndarray, board: dict) -> list[list[str | None]]:
     """Recognize all pieces on the board.
 
@@ -109,27 +169,24 @@ def recognize_board(screenshot: np.ndarray, board: dict) -> list[list[str | None
         8x8 list, rows top-to-bottom, cols left-to-right.
         Each cell is a FEN piece char or None.
     """
-    sq = board["square_size"]
-    img_h, img_w = screenshot.shape[:2]
     positions = []
     for row in range(8):
         rank = []
         for col in range(8):
-            x = round(board["x"] + col * sq)
-            y = round(board["y"] + row * sq)
-            w = round(sq)
-            h = round(sq)
-            # Clamp to image bounds so edge squares don't go out of frame
-            x = max(0, min(x, img_w - 1))
-            y = max(0, min(y, img_h - 1))
-            w = min(w, img_w - x)
-            h = min(h, img_h - y)
-            square_img = screenshot[y : y + h, x : x + w]
-            if square_img.size == 0:
+            square_img = _square_image(screenshot, board, row, col)
+            if square_img is None:
                 rank.append(None)
             else:
                 rank.append(recognize_square(square_img))
         positions.append(rank)
+
+    # Kings can never be captured — if one wasn't recognized, try to
+    # recover it with a relaxed match before the scan is used.
+    flat = [p for rank in positions for p in rank]
+    for king_sym in ("K", "k"):
+        if king_sym not in flat:
+            _recover_missing_king(screenshot, board, positions, king_sym)
+
     return positions
 
 
