@@ -111,6 +111,9 @@ class ChessVision:
         # instead of being inferred per scan.
         self.game_board: chess.Board | None = None
         self._last_analyzed_fen: str | None = None
+        # Visual effect toggles (menu can override) and enemy-move capture
+        self.visuals: dict = {}
+        self._new_enemy_move: chess.Move | None = None
 
         # Wire up menu → start
         self.menu.color_selected.connect(self._on_color_selected)
@@ -281,6 +284,8 @@ class ChessVision:
         self._lift_skips = 0
         self.game_board = None
         self._last_analyzed_fen = None
+        self._new_enemy_move = None
+        self.overlay.reset_board_visuals()
         print("Game state reset for new game.")
 
     # ------------------------------------------------------------------
@@ -427,7 +432,10 @@ class ChessVision:
         moves = self._match_moves(fen_position)
         if moves is not None:
             for mv in moves:
+                mover = "w" if b.turn == chess.WHITE else "b"
                 b.push(mv)
+                if mover != self.player_color:
+                    self._new_enemy_move = mv
             print(f"Tracked: {' '.join(m.uci() for m in moves)}")
             self.current_turn = "w" if b.turn == chess.WHITE else "b"
             return
@@ -445,6 +453,42 @@ class ChessVision:
 
         print("Recognized position doesn't follow legally — resyncing.")
         self._init_game_state(fen_position)
+
+    _PIECE_VALUES = {
+        chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
+        chess.ROOK: 5, chess.QUEEN: 9,
+    }
+
+    def _compute_threats(self) -> list[str]:
+        """Squares holding player pieces that are hanging or under-defended.
+
+        A piece counts as threatened when it's attacked and either has no
+        defender or is attacked by something cheaper than itself. The king
+        square is included when in check.
+        """
+        b = self.game_board
+        if b is None or self.player_color is None:
+            return []
+        us = chess.WHITE if self.player_color == "w" else chess.BLACK
+        out: list[str] = []
+        for sq, piece in b.piece_map().items():
+            if piece.color != us:
+                continue
+            if piece.piece_type == chess.KING:
+                if b.turn == us and b.is_check():
+                    out.append(chess.square_name(sq))
+                continue
+            attackers = b.attackers(not us, sq)
+            if not attackers:
+                continue
+            defenders = b.attackers(us, sq)
+            cheapest = min(
+                self._PIECE_VALUES.get(b.piece_at(a).piece_type, 99)
+                for a in attackers
+            )
+            if not defenders or cheapest < self._PIECE_VALUES.get(piece.piece_type, 0):
+                out.append(chess.square_name(sq))
+        return out
 
     def _infer_en_passant(self, old_fen_pos: str, new_fen_pos: str) -> str:
         """Infer en passant target square from a pawn double-push."""
@@ -496,7 +540,7 @@ class ChessVision:
 
             if board is None:
                 self._cached_board = None
-                self.overlay.clear_highlights()
+                self.overlay.reset_board_visuals()
                 self.overlay.set_status("Scanning... no board found", BLUE)
                 return
 
@@ -531,6 +575,7 @@ class ChessVision:
             # orientation follows from the chosen color. Never guess it from
             # piece placement — that flips in endgames when pieces advance.
             white_on_bottom = self.player_color == "w"
+            self.overlay.set_board_geometry(board, white_on_bottom)
 
             piece_count = sum(
                 1 for row in positions for p in row if p is not None
@@ -612,6 +657,12 @@ class ChessVision:
             else:
                 self._track_position(fen_position)
 
+            # Feed the overlay: opponent's last move trail + threat radar
+            if self._new_enemy_move is not None:
+                self.overlay.flash_enemy_move(self._new_enemy_move.uci())
+                self._new_enemy_move = None
+            self.overlay.set_threats(self._compute_threats())
+
             # Infer en passant from pawn double-pushes (only used by the
             # string-FEN fallback when game tracking is unavailable)
             if self.last_fen_position is not None:
@@ -639,7 +690,7 @@ class ChessVision:
                 self.overlay.set_status(
                     f"Game over ({result}) — waiting for new game...", ORANGE
                 )
-                self.overlay.clear_highlights()
+                self.overlay.reset_board_visuals()
                 self.last_fen_position = fen_position
                 print(f"Game over detected: {result}")
                 return
@@ -662,6 +713,9 @@ class ChessVision:
                     # CPL = eval_before + eval_after (opponent's loss)
                     cpl = eval_before + eval_after
                     self.elo_estimator.record_move(cpl)
+                    # eval_after is from the player's POV — flip for White POV
+                    white_cp = eval_after if self.player_color == "w" else -eval_after
+                    self.overlay.set_eval(white_cp)
                 except Exception as e:
                     print(f"ELO estimation error: {e}")
 
@@ -719,10 +773,7 @@ class ChessVision:
             self.last_move = chosen_move
             print(f"Suggested move: {chosen_move}")
 
-            from_rect, to_rect = self.engine.move_to_screen_coords(
-                chosen_move, board, white_on_bottom
-            )
-            self.overlay.set_highlights([from_rect, to_rect])
+            self._show_suggestion(chosen_move, fen)
             self.overlay.set_status(
                 f"Move: {chosen_move}", GREEN, duration_ms=4000
             )
@@ -730,6 +781,64 @@ class ChessVision:
         except Exception as e:
             print(f"Scan error: {e}")
             self.overlay.set_status(f"Error: {e}", RED, duration_ms=5000)
+
+    def _visual_on(self, key: str) -> bool:
+        return self.visuals.get(key, True)
+
+    def _show_suggestion(self, chosen_move: str, fen: str):
+        """Send the suggested move to the overlay with all visual context:
+        moving piece, criticality, capture/check flags, predicted
+        continuation, and alternative candidates."""
+        piece_sym = None
+        is_capture = False
+        is_check = False
+        pv: list[str] = []
+
+        try:
+            b = self.game_board.copy() if self.game_board is not None \
+                else chess.Board(fen)
+            mv = chess.Move.from_uci(chosen_move)
+            piece = b.piece_at(mv.from_square)
+            piece_sym = piece.symbol() if piece else None
+            is_capture = b.is_capture(mv)
+            is_check = b.gives_check(mv)
+
+            # Shallow lookahead for the predicted continuation
+            if self._visual_on("reply") or self._visual_on("pv"):
+                b.push(mv)
+                reply = self.engine.get_best_move(b.fen(), depth=8)
+                if reply:
+                    pv.append(reply)
+                    if self._visual_on("pv"):
+                        b.push(chess.Move.from_uci(reply))
+                        follow_up = self.engine.get_best_move(b.fen(), depth=8)
+                        if follow_up:
+                            pv.append(follow_up)
+        except Exception as e:
+            print(f"Suggestion visual context error: {e}")
+
+        candidates = []
+        if self._visual_on("candidates"):
+            candidates = [
+                m["move"] for m in self.move_selector.last_top_moves[:3]
+                if m["move"] != chosen_move
+            ]
+
+        self.overlay.show_suggestion(
+            chosen_move,
+            piece_symbol=piece_sym,
+            crit=self.move_selector.last_criticality,
+            is_capture=is_capture,
+            is_check=is_check,
+            pv=pv,
+            candidates=candidates,
+        )
+
+        # Eval bar from the fresh analysis (player POV -> White POV)
+        best_eval = self.move_selector.last_best_eval
+        if best_eval is not None:
+            white_cp = best_eval if self.player_color == "w" else -best_eval
+            self.overlay.set_eval(white_cp)
 
     def stop(self):
         self.running = False
