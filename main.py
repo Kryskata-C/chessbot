@@ -26,7 +26,8 @@ from piece_recognizer import (
 from engine import ChessEngine
 from elo_estimator import EloEstimator
 from move_selector import HumanMoveSelector
-from overlay import OverlayWindow, MenuWindow, DebugBoardWindow
+from overlay import OverlayWindow, DebugBoardWindow
+from menu import MenuWindow
 
 SCAN_INTERVAL_MS = 400
 
@@ -116,10 +117,12 @@ class ChessVision:
         self._new_enemy_move: chess.Move | None = None
 
         # Wire up menu → start
-        self.menu.color_selected.connect(self._on_color_selected)
+        self.menu.started.connect(self._on_started)
 
-    def _on_color_selected(self, color: str):
-        """Called when the user picks a color and clicks Start."""
+    def _on_started(self, color: str, visuals: dict):
+        """Called when the user picks a color + visuals and clicks Start."""
+        self.visuals = visuals
+        self.overlay.set_visual_config(visuals)
         self.player_color = color
         self.current_turn = "w"  # white always moves first
         color_name = "White" if color == "w" else "Black"
