@@ -68,14 +68,25 @@ class ChessEngine:
         placement = fen.split()[0]
         return "K" in placement and "k" in placement
 
-    def get_best_move(self, fen: str) -> str | None:
-        """Get the best move for the given FEN position."""
+    def get_best_move(self, fen: str, depth: int | None = None) -> str | None:
+        """Get the best move for the given FEN position.
+
+        Args:
+            depth: Optional one-off search depth (e.g. shallow lookahead
+                for reply prediction); the engine's default is restored after.
+        """
         if not self._fen_ok(fen):
             print(f"Rejecting FEN without both kings: {fen}")
             return None
         def _call():
-            self.engine.set_fen_position(fen)
-            return self.engine.get_best_move()
+            if depth is not None:
+                self.engine.set_depth(depth)
+            try:
+                self.engine.set_fen_position(fen)
+                return self.engine.get_best_move()
+            finally:
+                if depth is not None:
+                    self.engine.set_depth(self.depth)
         return self._safe_call(_call, fallback=None)
 
     def get_top_moves(self, fen: str, n: int = 5) -> list[dict]:

@@ -45,6 +45,10 @@ class HumanMoveSelector:
         self._total_moves: int = 0
         self._best_move_hits: int = 0
         self._total_cpl: float = 0.0
+        # Last-analysis data exposed for the overlay visualizer
+        self.last_top_moves: list[dict] = []
+        self.last_criticality: float = 0.0
+        self.last_best_eval: int | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -60,9 +64,14 @@ class HumanMoveSelector:
         Returns a UCI move string, or None if no legal moves.
         """
         top_moves = self.engine.get_top_moves(fen, self.NUM_CANDIDATES)
+        self.last_top_moves = top_moves or []
         if not top_moves:
+            self.last_criticality = 0.0
+            self.last_best_eval = None
             return self.engine.get_best_move(fen)
         if len(top_moves) == 1:
+            self.last_criticality = 1.0
+            self.last_best_eval = top_moves[0]["eval"]
             self._record(top_moves, top_moves[0]["move"])
             return top_moves[0]["move"]
 
@@ -74,6 +83,8 @@ class HumanMoveSelector:
         trend = self._compute_trend_urgency()
         criticality = self._compute_criticality(top_moves)
         opp_factor = self._compute_opponent_factor()
+        self.last_criticality = criticality
+        self.last_best_eval = best_eval
 
         temperature = self._compute_temperature(
             phase, pressure, trend, criticality, opp_factor
@@ -124,6 +135,9 @@ class HumanMoveSelector:
         self._total_moves = 0
         self._best_move_hits = 0
         self._total_cpl = 0.0
+        self.last_top_moves = []
+        self.last_criticality = 0.0
+        self.last_best_eval = None
 
     # ------------------------------------------------------------------
     # Phase detection
