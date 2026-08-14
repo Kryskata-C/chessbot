@@ -128,14 +128,21 @@ class HumanMoveSelector:
 
         self._eval_history.append(best_eval)
 
+        # How far this position is even allowed to deviate. Forcing positions
+        # (recaptures, tactics) collapse this toward zero so the obvious move
+        # gets played; quiet positions leave room for human imprecision.
+        ceiling = self._loss_ceiling(self.last_criticality)
+
         # Optionally surface a tempting-but-bad move (the classic human
         # blunder) so weak play isn't capped at the engine's Nth-best.
-        pool = self._augment_with_temptations(fen, top_moves, best_eval)
+        pool = self._augment_with_temptations(fen, top_moves, best_eval, ceiling)
 
         board = self._safe_board(fen)
         temperature, coasting = self._compute_temperature(best_eval, piece_count)
 
-        chosen = self._weighted_select(board, pool, best_eval, temperature, coasting)
+        chosen = self._weighted_select(
+            board, pool, best_eval, temperature, coasting, ceiling
+        )
 
         chosen_eval = next(
             (m["eval"] for m in pool if m["move"] == chosen), best_eval
@@ -192,8 +199,35 @@ class HumanMoveSelector:
 
     def _num_candidates(self) -> int:
         """Weak players consider more (and worse) moves than strong ones."""
-        n = round(4 + (1800 - self._target_elo) / 140)
+        n = round(5 + (1900 - self._target_elo) / 110)
         return int(max(4, min(self.NUM_CANDIDATES_MAX, n)))
+
+    def _loss_ceiling(self, criticality: float) -> float:
+        """The largest single-move error (cp) this position may deviate by.
+
+        This is the guard that stops a 1600 from ever hanging a piece for
+        nothing, and — crucially — forces the obvious move when the position
+        is forcing. Two inputs:
+
+        - ELO: the worse the player, the bigger a plausible one-move error.
+        - Criticality: when there is one clearly best move (a recapture, a
+          forced tactic), even a modest player finds it, so the ceiling
+          collapses toward "best move only". This is what a human does when
+          the position screams for a move — and what a bot fails to imitate
+          when it wanders off into a superficial pawn grab.
+        """
+        # A catastrophe guard, not the primary error shaper: set it a few
+        # multiples above the level's typical loss so the normal human spread
+        # passes through untouched and only the disaster tail is cut. The
+        # softmax temperature does the fine shaping.
+        acpl = elo_to_acpl(self._target_elo)
+        ceiling = acpl * 5.0 * (1.0 - 0.85 * criticality)
+        # Opening discipline: humans play near-book early, so hug the best
+        # moves for the first few plies instead of drifting into a passive,
+        # bot-looking setup. (This also disables temptation blunders early.)
+        if self._move_number < 6:
+            ceiling *= 0.5
+        return max(12.0, ceiling)
 
     def _naturalness_strength(self) -> float:
         """How much superficial move features sway the choice (0..1).
@@ -215,7 +249,7 @@ class HumanMoveSelector:
 
         # Opening book: humans play memorized theory early -> tighter.
         if self._move_number < 6:
-            temp *= 0.55 + (self._move_number / 6) * 0.45
+            temp *= 0.5 + (self._move_number / 6) * 0.45
 
         # Endgames are more forcing; humans (and we) get more precise.
         if piece_count <= 12:
@@ -360,17 +394,21 @@ class HumanMoveSelector:
     # ------------------------------------------------------------------
 
     def _augment_with_temptations(
-        self, fen: str, top_moves: list[dict], best_eval: int
+        self, fen: str, top_moves: list[dict], best_eval: int, ceiling: float
     ) -> list[dict]:
         """Occasionally add a superficially tempting losing move to the pool.
 
         The engine's top-N are all "reasonable"; real weak-player blunders
         live further down (grabbing a poisoned pawn, a premature attack).
         We surface a couple, evaluate them, and let the human prior decide.
-        Guarded by ELO and probability to bound engine cost.
+        Guarded by ELO and probability to bound engine cost, and never in a
+        forcing position (a tempting pawn grab must not override a recapture).
         """
         strength = self._naturalness_strength()
         if strength <= 0.05:
+            return top_moves
+        # A tiny ceiling means the position is forcing — do not tempt.
+        if ceiling < 40 or self.last_criticality >= 0.6:
             return top_moves
         if random.random() > 0.15 + 0.55 * strength:
             return top_moves
@@ -399,10 +437,11 @@ class HumanMoveSelector:
             board.pop()
             # reply_eval is from the opponent's POV after our move.
             our_eval = -reply_eval
-            # Only worth surfacing if it is actually a mistake but not an
-            # instant catastrophe (those look like a bot throwing).
+            # Only worth surfacing if it is a mistake this level would
+            # plausibly make — bounded by the per-position ceiling so we
+            # never inject an error too big for the target ELO.
             loss = best_eval - our_eval
-            if 60 <= loss <= 500:
+            if 60 <= loss <= ceiling:
                 pool.append({"move": move.uci(), "eval": our_eval})
         return pool
 
@@ -417,15 +456,22 @@ class HumanMoveSelector:
         best_eval: int,
         temperature: float,
         coasting: bool,
+        ceiling: float,
     ) -> str:
         strength = self._naturalness_strength()
 
+        # Hard error ceiling: discard any move worse than this level would
+        # plausibly play. This is what forces recaptures/tactics (tiny
+        # ceiling) and forbids oversized blunders — always keep the best.
+        candidates = [m for m in pool if best_eval - m["eval"] <= ceiling]
+        if not candidates:
+            candidates = [pool[0]]
+
         # In coast mode, protect the win: only consider moves that keep the
         # eval above the floor. Never coast a won game into equality.
-        candidates = pool
         if coasting:
             floor = self._win_floor()
-            kept = [m for m in pool if m["eval"] >= floor]
+            kept = [m for m in candidates if m["eval"] >= floor]
             if kept:
                 candidates = kept
 
