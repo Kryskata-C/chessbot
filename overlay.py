@@ -19,6 +19,33 @@ PIECE_UNICODE = {
 }
 
 
+def exclude_from_screen_capture(widget) -> None:
+    """Set the widget's NSWindow sharingType to NSWindowSharingNone.
+
+    mss screen grabs otherwise include our own windows: an arrow or
+    ghost piece painted over a square corrupts piece recognition there,
+    and a rejected scan then never moves the visuals \u2014 a deadlock.
+    """
+    try:
+        lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+        lib.sel_registerName.restype = ctypes.c_void_p
+        lib.sel_registerName.argtypes = [ctypes.c_char_p]
+        send = ctypes.cast(
+            lib.objc_msgSend,
+            ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p),
+        )
+        send_ulong = ctypes.cast(
+            lib.objc_msgSend,
+            ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong),
+        )
+        nswindow = send(int(widget.winId()), lib.sel_registerName(b"window"))
+        if nswindow:
+            # NSWindowSharingNone = 0
+            send_ulong(nswindow, lib.sel_registerName(b"setSharingType:"), 0)
+    except Exception as e:
+        print(f"screen-capture exclusion warning: {e}")
+
+
 class DebugBoardWindow(QWidget):
     """Small always-on-top window showing what pieces the scanner detects."""
 
@@ -50,6 +77,15 @@ class DebugBoardWindow(QWidget):
         if screen:
             geo = screen.geometry()
             self.move(geo.width() - self.width() - 20, 80)
+
+        self._capture_excluded = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._capture_excluded:
+            self._capture_excluded = True
+            # Delay slightly so the NSWindow is fully created
+            QTimer.singleShot(100, lambda: exclude_from_screen_capture(self))
 
     def set_positions(self, positions: list[list[str | None]],
                       white_on_bottom: bool, turn: str, piece_count: int,
@@ -293,7 +329,12 @@ class OverlayWindow(QWidget):
                 (1 << 0) | (1 << 4) | (1 << 8),
             )
 
-            print("macOS overlay: pinned above all windows, click-through enabled")
+            # Hide from screen capture: mss must never see our arrows or
+            # ghost pieces, or recognition reads them as board content
+            # (NSWindowSharingNone = 0)
+            send_long(nswindow, lib.sel_registerName(b"setSharingType:"), 0)
+
+            print("macOS overlay: pinned, click-through, hidden from capture")
         except Exception as e:
             print(f"macOS overlay setup warning: {e}")
 
