@@ -62,9 +62,11 @@ class DebugBoardWindow(QWidget):
         self.opponent_acpl: float | None = None
         self.bot_accuracy: float | None = None
         self.bot_cpl: float | None = None
+        self.target_elo: int | None = None
+        self.bot_realized_elo: int | None = None
 
         size = self.SQUARE_PX * 8 + 40  # board + margins for labels
-        self.setFixedSize(size, size + 68)  # extra space for info text + ELO + accuracy
+        self.setFixedSize(size, size + 86)  # extra space for info text + ELO + accuracy + bot ELO
         self.setWindowTitle("Debug Board")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -92,7 +94,9 @@ class DebugBoardWindow(QWidget):
                       estimated_elo: int | None = None,
                       opponent_acpl: float | None = None,
                       bot_accuracy: float | None = None,
-                      bot_cpl: float | None = None):
+                      bot_cpl: float | None = None,
+                      target_elo: int | None = None,
+                      bot_realized_elo: int | None = None):
         self.positions = positions
         self.white_on_bottom = white_on_bottom
         self.turn = turn
@@ -101,6 +105,8 @@ class DebugBoardWindow(QWidget):
         self.opponent_acpl = opponent_acpl
         self.bot_accuracy = bot_accuracy
         self.bot_cpl = bot_cpl
+        self.target_elo = target_elo
+        self.bot_realized_elo = bot_realized_elo
         self.update()
 
     def paintEvent(self, event):
@@ -184,6 +190,17 @@ class DebugBoardWindow(QWidget):
         else:
             acc_text = "Bot accuracy: --"
         painter.drawText(margin, acc_y, acc_text)
+
+        # Bot strength line: target vs. the ELO it is actually realizing
+        bot_y = acc_y + 16
+        painter.setPen(QColor(150, 210, 160))  # soft green
+        if self.target_elo is not None:
+            realized_str = (f"{self.bot_realized_elo}"
+                            if self.bot_realized_elo is not None else "…")
+            bot_text = f"Bot ELO: {self.target_elo} target · {realized_str} realized"
+        else:
+            bot_text = "Bot ELO: --"
+        painter.drawText(margin, bot_y, bot_text)
 
         painter.end()
 

@@ -196,6 +196,94 @@ class ColorSelect(QWidget):
         p.end()
 
 
+def _elo_tier(elo: int) -> str:
+    if elo < 800:
+        return "Novice"
+    if elo < 1200:
+        return "Beginner"
+    if elo < 1600:
+        return "Intermediate"
+    if elo < 2000:
+        return "Advanced"
+    if elo < 2400:
+        return "Expert"
+    return "Master"
+
+
+class StrengthSelect(QWidget):
+    """Draggable ELO slider that sets the strength the bot imitates."""
+
+    MIN_ELO = 400
+    MAX_ELO = 2800
+    STEP = 25
+
+    def __init__(self, default: int = 1400, parent=None):
+        super().__init__(parent)
+        self._elo = default
+        self.setFixedHeight(58)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._val_font = QFont("Helvetica Neue", 15, QFont.Weight.Black)
+        self._tier_font = QFont("Helvetica Neue", 10, QFont.Weight.DemiBold)
+
+    def value(self) -> int:
+        return self._elo
+
+    def _x_to_elo(self, x: float) -> int:
+        frac = (x - 7) / max(1, self.width() - 14)
+        frac = max(0.0, min(1.0, frac))
+        raw = self.MIN_ELO + frac * (self.MAX_ELO - self.MIN_ELO)
+        return int(round(raw / self.STEP) * self.STEP)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._set_from_x(event.position().x())
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._set_from_x(event.position().x())
+
+    def _set_from_x(self, x: float):
+        elo = self._x_to_elo(x)
+        if elo != self._elo:
+            self._elo = elo
+            self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+
+        # Value + tier readout
+        p.setFont(self._val_font)
+        p.setPen(QColor(255, 255, 255))
+        p.drawText(QRectF(0, 0, w, 24), Qt.AlignmentFlag.AlignLeft |
+                   Qt.AlignmentFlag.AlignVCenter, f"{self._elo}")
+        p.setFont(self._tier_font)
+        p.setPen(ACCENT)
+        p.drawText(QRectF(0, 0, w, 24), Qt.AlignmentFlag.AlignRight |
+                   Qt.AlignmentFlag.AlignVCenter, _elo_tier(self._elo).upper())
+
+        # Track
+        track_y = h - 14
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(22, 29, 43))
+        p.drawRoundedRect(QRectF(7, track_y - 3, w - 14, 6), 3, 3)
+
+        frac = (self._elo - self.MIN_ELO) / (self.MAX_ELO - self.MIN_ELO)
+        hx = 7 + frac * (w - 14)
+        grad = QLinearGradient(7, 0, hx, 0)
+        grad.setColorAt(0, ACCENT_DEEP)
+        grad.setColorAt(1, ACCENT)
+        p.setBrush(QBrush(grad))
+        p.drawRoundedRect(QRectF(7, track_y - 3, max(6, hx - 7), 6), 3, 3)
+
+        # Handle
+        p.setBrush(QColor(255, 255, 255))
+        p.setPen(QPen(ACCENT, 2))
+        p.drawEllipse(QPointF(hx, track_y), 8, 8)
+        p.end()
+
+
 class FeatureRow(QWidget):
     """One toggleable visual effect: icon, name, animated switch."""
 
@@ -248,7 +336,7 @@ class FeatureRow(QWidget):
 class MenuWindow(QDialog):
     """Animated startup menu: color pick + visual effect toggles."""
 
-    started = pyqtSignal(str, dict)  # (color "w"/"b", visuals dict)
+    started = pyqtSignal(str, int, dict)  # (color "w"/"b", target_elo, visuals)
 
     HEADER_H = 148
     FOOTER_H = 84
@@ -260,7 +348,7 @@ class MenuWindow(QDialog):
         self._entrance_done = False
 
         self.setWindowTitle("Chess Vision")
-        self.setFixedSize(400, 676)
+        self.setFixedSize(400, 762)
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
@@ -311,7 +399,18 @@ class MenuWindow(QDialog):
 
         self.color_select = ColorSelect()
         layout.addWidget(self.color_select)
-        layout.addSpacing(14)
+        layout.addSpacing(16)
+
+        strength_label = QLabel("BOT STRENGTH")
+        strength_label.setStyleSheet(
+            "color: #7b8aa5; font-size: 10px; font-weight: 700;"
+            "letter-spacing: 2px; background: transparent;"
+        )
+        layout.addWidget(strength_label)
+        layout.addSpacing(2)
+        self.strength_select = StrengthSelect()
+        layout.addWidget(self.strength_select)
+        layout.addSpacing(12)
 
         section = QLabel("VISUAL EFFECTS")
         section.setStyleSheet(
@@ -384,7 +483,8 @@ class MenuWindow(QDialog):
     def _on_start(self):
         visuals = {key: row.switch.isChecked()
                    for key, row in self._rows.items()}
-        self.started.emit(self.color_select.color(), visuals)
+        self.started.emit(self.color_select.color(),
+                          self.strength_select.value(), visuals)
         self.hide()
 
     # --- entrance animation ---

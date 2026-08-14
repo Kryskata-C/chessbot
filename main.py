@@ -104,6 +104,7 @@ class ChessVision(QObject):
         self.last_fen_position: str | None = None
         self.last_move: str | None = None
         self.player_color: str | None = None  # "w" or "b"
+        self.target_elo: int = HumanMoveSelector.DEFAULT_TARGET_ELO
         self.current_turn: str = "w"  # white always moves first
         self.running = True
         self.has_templates = len(get_templates()) > 0
@@ -187,14 +188,16 @@ class ChessVision(QObject):
         elif op == "debug":
             self.debug_board.set_positions(**payload)
 
-    def _on_started(self, color: str, visuals: dict):
-        """Called when the user picks a color + visuals and clicks Start."""
+    def _on_started(self, color: str, target_elo: int, visuals: dict):
+        """Called when the user picks a color + strength + visuals and Starts."""
         self.visuals = visuals
         self.overlay.set_visual_config(visuals)
         self.player_color = color
+        self.target_elo = target_elo
+        self.move_selector.set_target_elo(target_elo)
         self.current_turn = "w"  # white always moves first
         color_name = "White" if color == "w" else "Black"
-        print(f"Playing as: {color_name}")
+        print(f"Playing as: {color_name}  (target ELO {target_elo})")
 
         if self.has_templates:
             self.overlay.set_status(
@@ -904,6 +907,8 @@ class ChessVision(QObject):
                 "opponent_acpl": acpl,
                 "bot_accuracy": self.move_selector.get_accuracy(),
                 "bot_cpl": self.move_selector.get_avg_cpl(),
+                "target_elo": self.move_selector.get_target_elo(),
+                "bot_realized_elo": self.move_selector.get_realized_elo(),
             })
 
             if piece_count < 4:
