@@ -135,6 +135,10 @@ class ChessVision(QObject):
         # disappeared (someone is dragging), with a stale-out safety cap
         self._lift_skips: int = 0
         self._MAX_LIFT_SKIPS = 6
+        # King-missing guard: if a king stays invisible, our own overlay
+        # visuals may be covering it — clear them once to break the loop
+        self._king_miss_scans: int = 0
+        self._KING_MISS_RESET = 3
         # Tracked game state: recognition identifies which legal move was
         # played; turn/castling/en-passant then come from real game state
         # instead of being inferred per scan.
@@ -393,6 +397,7 @@ class ChessVision(QObject):
         self._game_over = False
         self._en_passant = "-"
         self._lift_skips = 0
+        self._king_miss_scans = 0
         self.game_board = None
         self._last_analyzed_fen = None
         self._new_enemy_move = None
@@ -718,7 +723,8 @@ class ChessVision(QObject):
             # Cheap change gate: compare per-square brightness against the
             # previous scan and skip the expensive template matching
             # (~200ms) when the board hasn't visibly changed. Disabled
-            # while a pending position is stabilizing.
+            # while a pending position is stabilizing or a king is missing
+            # (the missing-king guard must keep rescanning to fire).
             bx, by = int(board["x"]), int(board["y"])
             bs = int(board["width"])
             crop = screenshot[max(0, by):by + bs, max(0, bx):bx + bs]
@@ -728,6 +734,7 @@ class ChessVision(QObject):
                 cells = gray.reshape(8, 8, 8, 8).mean(axis=(1, 3))
                 if (self._last_cells is not None
                         and self._pending_fen is None
+                        and self._king_miss_scans == 0
                         and float(np.abs(cells - self._last_cells).max()) < 5.0):
                     self._last_cells = cells
                     return  # board visually unchanged — nothing to do
@@ -753,8 +760,12 @@ class ChessVision(QObject):
             # cursor/glow overlay) — Stockfish crashes on king-less FENs,
             # so never accept or analyze such a position.
             if "K" not in fen_position or "k" not in fen_position:
+                self._king_miss_scans += 1
+                if self._king_miss_scans == self._KING_MISS_RESET:
+                    self._gui("reset_visuals")
                 self._status("Scan unclear — king not visible", ORANGE)
                 return
+            self._king_miss_scans = 0
 
             # New game detection: piece count jumps back near 32
             if self._game_over and piece_count >= 30 and fen_position == STARTING_PLACEMENT:
