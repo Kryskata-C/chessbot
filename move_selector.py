@@ -70,6 +70,9 @@ class HumanMoveSelector:
         self._eval_history: list[int] = []
         self._move_number: int = 0
         self._consecutive_best: int = 0
+        # The bot's own recent moves, for move-to-move coherence (humans
+        # don't shuffle a rook out and back, or re-move one piece aimlessly).
+        self._recent_moves: list[chess.Move] = []
 
         # Anti-domination governor: the winning margin (cp) we try to
         # plateau at this game. Resampled each game for variety.
@@ -168,6 +171,7 @@ class HumanMoveSelector:
         self._eval_history.clear()
         self._move_number = 0
         self._consecutive_best = 0
+        self._recent_moves.clear()
         self._opponent_elo = None
         self._temp_gain = 1.0
         self._realized.reset()
@@ -387,7 +391,44 @@ class HumanMoveSelector:
         if forward < 0 and not board.is_capture(move) and not board.gives_check(move):
             bonus -= 0.3
 
+        # Early queen sortie: bringing the queen out in the opening to a
+        # loose square is a classic way to get it chased or trapped, and a
+        # principle most players above beginner level follow. (This exact
+        # pattern — Qa4 then a lost queen — cost a real game.)
+        if (mover.piece_type == chess.QUEEN and self._move_number < 10
+                and not board.is_capture(move)):
+            home_rank = 0 if board.turn == chess.WHITE else 7
+            if abs(chess.square_rank(move.to_square) - home_rank) >= 2:
+                bonus -= 0.7
+
         return bonus
+
+    def _coherence_penalty(self, uci: str) -> float:
+        """Penalize move-to-move incoherence — the un-human tells that a
+        per-position engine produces: shuffling a piece out and back, or
+        re-moving the same piece aimlessly. Applied at every ELO (nobody
+        good plays Ra2 then Ra1); the softmax loss term still lets a genuine
+        best-move reversal through when it is clearly forced.
+        """
+        if not self._recent_moves:
+            return 0.0
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            return 0.0
+
+        penalty = 0.0
+        last = self._recent_moves[-1]
+        # Immediate reversal: move the same piece straight back where it came.
+        if move.from_square == last.to_square and move.to_square == last.from_square:
+            penalty -= 1.6
+        # Return to a square this piece vacated in its last couple of moves.
+        elif move.to_square in {m.from_square for m in self._recent_moves[-2:]}:
+            penalty -= 0.7
+        # Re-moving the piece that just moved (no fresh development/plan).
+        if move.from_square == last.to_square and penalty == 0.0:
+            penalty -= 0.35
+        return penalty
 
     # ------------------------------------------------------------------
     # Tempting-but-bad move injection (realistic blunders at low ELO)
@@ -480,6 +521,7 @@ class HumanMoveSelector:
             loss = best_eval - m["eval"]
             exponent = -loss / max(temperature, 1.0)
             exponent += strength * self._human_prior(board, m["move"])
+            exponent += self._coherence_penalty(m["move"])
             exponent = max(-30.0, min(30.0, exponent))
             moves.append(m["move"])
             weights.append(math.exp(exponent))
@@ -521,6 +563,11 @@ class HumanMoveSelector:
         self._total_moves += 1
         self._total_cpl += loss
         self._realized.record_move(loss)
+        try:
+            self._recent_moves.append(chess.Move.from_uci(chosen))
+            self._recent_moves = self._recent_moves[-4:]
+        except ValueError:
+            pass
 
     def _safe_board(self, fen: str) -> chess.Board | None:
         try:
