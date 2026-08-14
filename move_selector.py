@@ -1,18 +1,33 @@
-"""Human-like move selection with adaptive accuracy.
+"""Human-like move selection driven by a target ELO.
 
-Instead of always playing the engine's #1 move, this module selects from
-the top N engine candidates using a softmax probability distribution.
-The "temperature" (randomness) adapts dynamically based on:
+The user sets a target strength before the game. Everything here works to
+make the *stream of suggested moves* look like a real player of that
+strength — realistic mistakes, no robotic perfection, and above all no
+40-move domination when a normal human would just win a normal game.
 
-- Game phase (opening/middle/endgame)
-- Position pressure (winning vs losing)
-- Eval trend (is our position deteriorating?)
-- Move criticality (is there only one good move?)
-- Anti-engine smoothing (avoid suspiciously perfect streaks)
-- Opponent strength (play tighter vs strong opponents who punish mistakes)
+Four coupled mechanisms:
 
-When losing, temperature drops sharply — near-engine play to fight back.
-When comfortable, temperature rises — more natural, human-like variance.
+1. **ELO -> error budget.** Target ELO maps to a target average centipawn
+   loss (ACPL). That sets the base "temperature" of a softmax over engine
+   candidates, plus how many candidates we even consider (weak players
+   weigh more, worse moves; strong players tunnel on the best few).
+
+2. **Human-plausibility prior.** Every candidate is re-weighted by how a
+   human would *feel* about it: captures / checks / forward moves are
+   tempting; quiet moves, retreats, and moves that hang a piece (the
+   engine's brilliant sacrifices) are under-selected. Scaled by weakness,
+   so the inserted error lands exactly where a human misses — never as an
+   obvious out-of-nowhere blunder.
+
+3. **Anti-domination governor.** Each game samples a target winning margin
+   (so results vary: sometimes close, sometimes comfortable). When we are
+   crushing beyond it, we ease off — pick sound-but-not-crushing moves that
+   keep the win while letting the margin breathe — with a hard floor so a
+   won game is never thrown.
+
+4. **Closed-loop ELO controller.** The bot's own move losses feed a live
+   "realized ELO". A slow controller nudges the error budget until realized
+   ELO matches the target the user asked for.
 """
 
 from __future__ import annotations
@@ -20,32 +35,57 @@ from __future__ import annotations
 import math
 import random
 
+import chess
+
 from engine import ChessEngine
+from elo_estimator import EloEstimator, elo_to_acpl, acpl_to_elo
+
+# Piece values in centipawns, for judging captures and apparent hangs.
+_PIECE_VALUE = {
+    chess.PAWN: 100,
+    chess.KNIGHT: 300,
+    chess.BISHOP: 300,
+    chess.ROOK: 500,
+    chess.QUEEN: 900,
+    chess.KING: 0,
+}
+
+_MATE_CP = 100000
+_WINNING_CP = 150   # eval above this = "we are winning"
 
 
 class HumanMoveSelector:
-    """Selects moves that mimic human play while remaining competitive."""
+    """Selects moves that mimic a human of a chosen ELO while staying sound."""
 
-    # Game phase thresholds (piece count)
-    OPENING_PIECES = 28
-    EARLY_MID_PIECES = 22
-    MIDDLE_PIECES = 16
-    # Below MIDDLE_PIECES = endgame
-
-    NUM_CANDIDATES = 5
-    TREND_WINDOW = 6  # how many evals to look back for trend detection
+    DEFAULT_TARGET_ELO = 1400
+    NUM_CANDIDATES_MAX = 16
+    TREND_WINDOW = 6
 
     def __init__(self, engine: ChessEngine):
         self.engine = engine
+        self._target_elo: int = self.DEFAULT_TARGET_ELO
+        self._opponent_elo: int | None = None
+
+        # Per-game state
         self._eval_history: list[int] = []
         self._move_number: int = 0
         self._consecutive_best: int = 0
-        self._opponent_elo: int | None = None
-        # Accuracy tracking for display
+
+        # Anti-domination governor: the winning margin (cp) we try to
+        # plateau at this game. Resampled each game for variety.
+        self._target_margin: int = 250
+
+        # Closed-loop controller: multiplies the base error budget so the
+        # realized ELO converges to the target.
+        self._temp_gain: float = 1.0
+        self._realized = EloEstimator()
+
+        # Display / accuracy tracking
         self._total_moves: int = 0
         self._best_move_hits: int = 0
         self._total_cpl: float = 0.0
-        # Last-analysis data exposed for the overlay visualizer
+
+        # Last-analysis data exposed to the overlay visualizer
         self.last_top_moves: list[dict] = []
         self.last_criticality: float = 0.0
         self.last_best_eval: int | None = None
@@ -54,284 +94,401 @@ class HumanMoveSelector:
     # Public API
     # ------------------------------------------------------------------
 
-    def set_opponent_elo(self, elo: int | None):
-        """Update estimated opponent strength (used to adapt play tightness)."""
+    def set_target_elo(self, elo: int) -> None:
+        """Set the strength the suggestions should imitate."""
+        self._target_elo = int(max(300, min(3000, elo)))
+
+    def get_target_elo(self) -> int:
+        return self._target_elo
+
+    def set_opponent_elo(self, elo: int | None) -> None:
+        """Update estimated opponent strength (used to bound risk)."""
         self._opponent_elo = elo
 
-    def select_move(self, fen: str, piece_count: int) -> str | None:
-        """Pick a human-like move for the position.
+    def get_realized_elo(self) -> int | None:
+        """The bot's own live ELO, estimated from the moves it has picked."""
+        return self._realized.get_estimate()
 
-        Returns a UCI move string, or None if no legal moves.
-        """
-        top_moves = self.engine.get_top_moves(fen, self.NUM_CANDIDATES)
+    def select_move(self, fen: str, piece_count: int) -> str | None:
+        """Pick a human-like move. Returns a UCI string, or None if none."""
+        top_moves = self.engine.get_top_moves(fen, self._num_candidates())
         self.last_top_moves = top_moves or []
         if not top_moves:
             self.last_criticality = 0.0
             self.last_best_eval = None
             return self.engine.get_best_move(fen)
-        if len(top_moves) == 1:
-            self.last_criticality = 1.0
-            self.last_best_eval = top_moves[0]["eval"]
-            self._record(top_moves, top_moves[0]["move"])
-            return top_moves[0]["move"]
 
         best_eval = top_moves[0]["eval"]
+        self.last_best_eval = best_eval
+        self.last_criticality = self._compute_criticality(top_moves)
+
+        if len(top_moves) == 1:
+            self._record(top_moves, top_moves[0]["move"], 0)
+            return top_moves[0]["move"]
+
         self._eval_history.append(best_eval)
 
-        phase = self._get_phase(piece_count)
-        pressure = self._compute_pressure(best_eval)
-        trend = self._compute_trend_urgency()
-        criticality = self._compute_criticality(top_moves)
-        opp_factor = self._compute_opponent_factor()
-        self.last_criticality = criticality
-        self.last_best_eval = best_eval
+        # Optionally surface a tempting-but-bad move (the classic human
+        # blunder) so weak play isn't capped at the engine's Nth-best.
+        pool = self._augment_with_temptations(fen, top_moves, best_eval)
 
-        temperature = self._compute_temperature(
-            phase, pressure, trend, criticality, opp_factor
-        )
+        board = self._safe_board(fen)
+        temperature, coasting = self._compute_temperature(best_eval, piece_count)
 
-        chosen = self._weighted_select(top_moves, temperature)
-        self._record(top_moves, chosen)
+        chosen = self._weighted_select(board, pool, best_eval, temperature, coasting)
 
-        # Track accuracy stats
         chosen_eval = next(
-            (m["eval"] for m in top_moves if m["move"] == chosen), best_eval
+            (m["eval"] for m in pool if m["move"] == chosen), best_eval
         )
-        delta = best_eval - chosen_eval
-        self._total_moves += 1
-        self._total_cpl += delta
-        if chosen == top_moves[0]["move"]:
-            self._best_move_hits += 1
-
-        # Logging
-        tag = "*" if chosen == top_moves[0]["move"] else " "
-        print(
-            f"  [{tag}] move={chosen}  loss={delta}cp  "
-            f"temp={temperature:.0f}  phase={phase}  "
-            f"pressure={pressure:.2f}  trend={trend:.2f}  "
-            f"crit={criticality:.2f}  opp={opp_factor:.2f}"
-        )
-
+        loss = max(0, best_eval - chosen_eval)
+        self._record(top_moves, chosen, loss)
+        self._run_controller()
+        self._log(chosen, top_moves, loss, temperature, coasting)
         return chosen
 
     def get_accuracy(self) -> float | None:
-        """Return best-move rate as a percentage, or None if no moves yet."""
         if self._total_moves == 0:
             return None
         return (self._best_move_hits / self._total_moves) * 100
 
     def get_avg_cpl(self) -> float | None:
-        """Return average centipawn loss of selected moves."""
         if self._total_moves == 0:
             return None
         return self._total_cpl / self._total_moves
 
-    def reset(self):
-        """Clear state for a new game."""
+    def reset(self) -> None:
+        """Clear per-game state and sample a fresh game script."""
         self._eval_history.clear()
         self._move_number = 0
         self._consecutive_best = 0
         self._opponent_elo = None
+        self._temp_gain = 1.0
+        self._realized.reset()
         self._total_moves = 0
         self._best_move_hits = 0
         self._total_cpl = 0.0
         self.last_top_moves = []
         self.last_criticality = 0.0
         self.last_best_eval = None
+        self._target_margin = self._sample_target_margin()
 
     # ------------------------------------------------------------------
-    # Phase detection
+    # ELO -> error budget
     # ------------------------------------------------------------------
 
-    def _get_phase(self, piece_count: int) -> str:
-        if piece_count >= self.OPENING_PIECES:
-            return "opening"
-        if piece_count >= self.EARLY_MID_PIECES:
-            return "early_middle"
-        if piece_count >= self.MIDDLE_PIECES:
-            return "middlegame"
-        return "endgame"
+    def _base_temperature(self) -> float:
+        """Softmax temperature (cp) seeded from the target ELO's ACPL.
+
+        The closed-loop controller fine-tunes the constant, so this only
+        needs to be monotonic in ELO. Weaker -> hotter -> more spread.
+
+        The temp->realized-ACPL relationship is strongly sublinear (we only
+        draw from top-N candidates, whose losses are bounded), so weak play
+        needs a temperature well above its target ACPL to actually spread.
+        """
+        acpl = elo_to_acpl(self._target_elo)
+        weakness = self._naturalness_strength()
+        return max(6.0, min(800.0, acpl * (1.9 + 3.4 * weakness)))
+
+    def _num_candidates(self) -> int:
+        """Weak players consider more (and worse) moves than strong ones."""
+        n = round(4 + (1800 - self._target_elo) / 140)
+        return int(max(4, min(self.NUM_CANDIDATES_MAX, n)))
+
+    def _naturalness_strength(self) -> float:
+        """How much superficial move features sway the choice (0..1).
+
+        Strong at low ELO, fades to ~0 by ~1900 where players calculate
+        rather than react to how a move looks.
+        """
+        return max(0.0, min(1.0, (1900 - self._target_elo) / 1300))
 
     # ------------------------------------------------------------------
-    # Pressure: how much trouble are we in? (0 = desperate, 1+ = fine)
+    # Temperature: combine ELO budget, phase, danger, and the governor
     # ------------------------------------------------------------------
 
-    def _compute_pressure(self, eval_cp: int) -> float:
-        """Return a 0–1.1 pressure factor from the current eval."""
-        if eval_cp <= -400:
-            return 0.0
-        if eval_cp <= -200:
-            # Linear ramp from 0.0 at -400 to 0.25 at -200
-            return 0.25 * (eval_cp + 400) / 200
-        if eval_cp <= -100:
-            return 0.25 + 0.25 * (eval_cp + 200) / 100
-        if eval_cp <= 0:
-            return 0.50 + 0.25 * (eval_cp + 100) / 100
-        if eval_cp <= 150:
-            return 0.75 + 0.25 * eval_cp / 150
-        if eval_cp <= 400:
-            return 1.0 + 0.1 * (eval_cp - 150) / 250
-        return 1.1
+    def _compute_temperature(
+        self, best_eval: int, piece_count: int
+    ) -> tuple[float, bool]:
+        """Return (temperature, coasting) for this position."""
+        temp = self._base_temperature() * self._temp_gain
 
-    # ------------------------------------------------------------------
-    # Trend detection: is our eval sliding downhill?
-    # ------------------------------------------------------------------
+        # Opening book: humans play memorized theory early -> tighter.
+        if self._move_number < 6:
+            temp *= 0.55 + (self._move_number / 6) * 0.45
 
-    def _compute_trend_urgency(self) -> float:
-        """0 = stable/improving, approaching 1 = eval collapsing."""
+        # Endgames are more forcing; humans (and we) get more precise.
+        if piece_count <= 12:
+            temp *= 0.7
+
+        # An obvious best move gets found even by weaker players.
+        temp *= 1.0 - 0.6 * self.last_criticality
+
+        # Danger: when losing, fight harder (tighten). This is asymmetric —
+        # we relax when ahead but bear down when behind.
+        if best_eval <= -250:
+            temp *= 0.4
+        elif best_eval <= -80:
+            temp *= 0.7
+        temp *= 1.0 - 0.4 * self._trend_urgency()
+
+        # Anti-domination governor: crushing beyond our target margin ->
+        # ease off (coast) instead of pressing for the fastest kill.
+        coasting = False
+        if best_eval >= _WINNING_CP and best_eval < _MATE_CP:
+            over = best_eval - self._target_margin
+            if over > 0:
+                coasting = True
+                temp *= 1.0 + min(over / max(self._target_margin, 80), 1.5)
+
+        # Avoid a suspiciously perfect streak.
+        if self._consecutive_best >= 6:
+            temp *= min(1.0 + 0.06 * (self._consecutive_best - 5), 1.3)
+
+        floor = 3.0 if best_eval <= -250 else 6.0
+        return max(floor, temp), coasting
+
+    def _trend_urgency(self) -> float:
+        """0 = stable/improving, ->1 = our eval is sliding downhill."""
         if len(self._eval_history) < 3:
             return 0.0
-
         window = self._eval_history[-self.TREND_WINDOW:]
         n = len(window)
         x_mean = (n - 1) / 2
         y_mean = sum(window) / n
-
         numer = sum((i - x_mean) * (v - y_mean) for i, v in enumerate(window))
         denom = sum((i - x_mean) ** 2 for i in range(n))
         if denom == 0:
             return 0.0
-
-        slope = numer / denom  # cp per move (negative = getting worse)
-        if slope >= 0:
-            return 0.0
-        return min(1.0, abs(slope) / 100)
-
-    # ------------------------------------------------------------------
-    # Criticality: is there only one reasonable move?
-    # ------------------------------------------------------------------
+        slope = numer / denom
+        return 0.0 if slope >= 0 else min(1.0, abs(slope) / 100)
 
     def _compute_criticality(self, top_moves: list[dict]) -> float:
-        """0 = many good options, 1 = one clearly best move.
-
-        When criticality is high, even a human would find the right move
-        because the position "screams" for it.
-        """
+        """0 = many good options, 1 = one clearly forced move."""
         if len(top_moves) < 2:
             return 1.0
-
-        best = top_moves[0]["eval"]
-        second = top_moves[1]["eval"]
-        gap = best - second
-
-        # Small gap (<30cp) = many reasonable choices
-        # Big gap (200cp+) = must find the best move
+        gap = top_moves[0]["eval"] - top_moves[1]["eval"]
         if gap <= 30:
             return 0.0
         return min(1.0, (gap - 30) / 170)
 
     # ------------------------------------------------------------------
-    # Opponent strength adaptation
+    # Anti-domination governor
     # ------------------------------------------------------------------
 
-    def _compute_opponent_factor(self) -> float:
-        """Scale temperature based on estimated opponent ELO.
+    def _sample_target_margin(self) -> int:
+        """The winning margin (cp) we try to plateau at this game.
 
-        Strong opponents punish inaccuracies, so we play tighter.
-        Weak opponents won't exploit small mistakes, so we can relax.
-        Returns a multiplier: <1 = tighter, 1 = neutral, >1 = relaxed.
+        Skewed toward modest, human-looking wins with an occasional
+        comfortable game — but rarely a total rout.
         """
-        if self._opponent_elo is None:
-            return 1.0  # no data yet, play normally
+        margin = random.gauss(260, 110)
+        return int(max(90, min(650, margin)))
 
-        elo = self._opponent_elo
-        if elo >= 2200:
-            return 0.6    # master-level: play very tight
-        if elo >= 1800:
-            # Linear ramp from 0.6 at 2200 to 0.8 at 1800
-            return 0.8 - 0.2 * (elo - 1800) / 400
-        if elo >= 1400:
-            # Linear ramp from 0.8 at 1800 to 1.0 at 1400
-            return 1.0 - 0.2 * (elo - 1400) / 400
-        if elo >= 1000:
-            # Linear ramp from 1.0 at 1400 to 1.15 at 1000
-            return 1.15 - 0.15 * (elo - 1000) / 400
-        # Below 1000: relax even more
-        return 1.2
+    def _win_floor(self) -> int:
+        """Never coast into a move that drops eval below this — the win is
+        protected. Scales with how much of a cushion we sampled."""
+        return max(90, int(self._target_margin * 0.5))
 
     # ------------------------------------------------------------------
-    # Temperature: the heart of humanization
+    # Human-plausibility prior
     # ------------------------------------------------------------------
 
-    def _compute_temperature(
+    def _human_prior(self, board: chess.Board | None, uci: str) -> float:
+        """Log-weight bonus for how tempting a move looks to a human.
+
+        Positive = a human is drawn to it; negative = a human tends to
+        overlook it. Callers scale this by naturalness before applying.
+        """
+        if board is None:
+            return 0.0
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            return 0.0
+        if move not in board.legal_moves:
+            return 0.0
+
+        bonus = 0.0
+        mover = board.piece_at(move.from_square)
+        if mover is None:
+            return 0.0
+
+        # Checks and captures grab attention.
+        if board.gives_check(move):
+            bonus += 0.6
+        if board.is_capture(move):
+            victim = board.piece_at(move.to_square)
+            victim_val = _PIECE_VALUE.get(victim.piece_type, 0) if victim else 100
+            attacker_val = _PIECE_VALUE.get(mover.piece_type, 0)
+            # Winning/equal captures are magnetic; losing captures less so.
+            bonus += 0.7 if victim_val >= attacker_val else 0.15
+
+        # Promotions are hard to miss.
+        if move.promotion == chess.QUEEN:
+            bonus += 0.8
+
+        # Apparent hang: landing where a cheaper enemy piece can take, with
+        # no friendly defender. This is exactly the engine sacrifice a weak
+        # human refuses — so we under-select it.
+        if not board.is_capture(move):
+            enemy = not board.turn
+            attackers = board.attackers(enemy, move.to_square)
+            if attackers:
+                cheapest = min(
+                    _PIECE_VALUE.get(board.piece_at(sq).piece_type, 0)
+                    for sq in attackers
+                )
+                mover_val = _PIECE_VALUE.get(mover.piece_type, 0)
+                board.push(move)
+                defended = bool(board.attackers(not enemy, move.to_square))
+                board.pop()
+                if cheapest < mover_val and not defended:
+                    bonus -= 0.9
+
+        # Retreats (toward our own back rank) are psychologically avoided.
+        from_rank = chess.square_rank(move.from_square)
+        to_rank = chess.square_rank(move.to_square)
+        forward = to_rank - from_rank if board.turn == chess.WHITE else from_rank - to_rank
+        if forward < 0 and not board.is_capture(move) and not board.gives_check(move):
+            bonus -= 0.3
+
+        return bonus
+
+    # ------------------------------------------------------------------
+    # Tempting-but-bad move injection (realistic blunders at low ELO)
+    # ------------------------------------------------------------------
+
+    def _augment_with_temptations(
+        self, fen: str, top_moves: list[dict], best_eval: int
+    ) -> list[dict]:
+        """Occasionally add a superficially tempting losing move to the pool.
+
+        The engine's top-N are all "reasonable"; real weak-player blunders
+        live further down (grabbing a poisoned pawn, a premature attack).
+        We surface a couple, evaluate them, and let the human prior decide.
+        Guarded by ELO and probability to bound engine cost.
+        """
+        strength = self._naturalness_strength()
+        if strength <= 0.05:
+            return top_moves
+        if random.random() > 0.15 + 0.55 * strength:
+            return top_moves
+
+        board = self._safe_board(fen)
+        if board is None:
+            return top_moves
+
+        known = {m["move"] for m in top_moves}
+        tempting: list[chess.Move] = []
+        for move in board.legal_moves:
+            uci = move.uci()
+            if uci in known:
+                continue
+            if board.is_capture(move) or board.gives_check(move):
+                tempting.append(move)
+        if not tempting:
+            return top_moves
+
+        random.shuffle(tempting)
+        pool = list(top_moves)
+        n_consider = 3 + int(round(2 * strength))
+        for move in tempting[:n_consider]:
+            board.push(move)
+            reply_eval = self.engine.get_evaluation(board.fen(), depth=8)
+            board.pop()
+            # reply_eval is from the opponent's POV after our move.
+            our_eval = -reply_eval
+            # Only worth surfacing if it is actually a mistake but not an
+            # instant catastrophe (those look like a bot throwing).
+            loss = best_eval - our_eval
+            if 60 <= loss <= 500:
+                pool.append({"move": move.uci(), "eval": our_eval})
+        return pool
+
+    # ------------------------------------------------------------------
+    # Weighted selection: softmax over losses, biased by the human prior
+    # ------------------------------------------------------------------
+
+    def _weighted_select(
         self,
-        phase: str,
-        pressure: float,
-        trend_urgency: float,
-        criticality: float,
-        opponent_factor: float = 1.0,
-    ) -> float:
-        """Higher temperature = more random (human-like).
-        Lower temperature = more engine-like (fighting back).
-        """
-        # Base temperature by game phase
-        base = {
-            "opening": 45,        # humans know theory, moderate variance
-            "early_middle": 70,   # complex, humans err most here
-            "middlegame": 60,     # still significant variance
-            "endgame": 35,        # humans get more precise
-        }[phase]
+        board: chess.Board | None,
+        pool: list[dict],
+        best_eval: int,
+        temperature: float,
+        coasting: bool,
+    ) -> str:
+        strength = self._naturalness_strength()
 
-        # Opening book effect: first ~6 moves humans play memorized lines
-        if self._move_number < 6:
-            book_factor = 0.55 + (self._move_number / 6) * 0.45
-            base *= book_factor
+        # In coast mode, protect the win: only consider moves that keep the
+        # eval above the floor. Never coast a won game into equality.
+        candidates = pool
+        if coasting:
+            floor = self._win_floor()
+            kept = [m for m in pool if m["eval"] >= floor]
+            if kept:
+                candidates = kept
 
-        # Pressure scaling (0=desperate→very low, 1.1=dominating→normal+)
-        pressure_factor = 0.08 + 0.92 * pressure
-
-        # Trend urgency: eval dropping → tighten play to stop bleeding
-        trend_factor = 1.0 - 0.55 * trend_urgency
-
-        # Criticality: obvious best move → human finds it too
-        crit_factor = 1.0 - 0.65 * criticality
-
-        # Anti-engine: too many consecutive best moves looks suspicious
-        if self._consecutive_best >= 5:
-            anti_engine = 1.0 + 0.07 * (self._consecutive_best - 4)
-            anti_engine = min(anti_engine, 1.35)
-        else:
-            anti_engine = 1.0
-
-        temperature = base * pressure_factor * trend_factor * crit_factor * anti_engine * opponent_factor
-
-        # Floor so there's always *some* chance of deviation
-        if pressure <= 0.15:
-            temperature = max(3, temperature)   # desperate: near-engine
-        else:
-            temperature = max(8, temperature)   # normal: small floor
-
-        return temperature
-
-    # ------------------------------------------------------------------
-    # Weighted random selection (softmax over eval deltas)
-    # ------------------------------------------------------------------
-
-    def _weighted_select(self, moves: list[dict], temperature: float) -> str:
-        best_eval = moves[0]["eval"]
-
-        weights = []
-        for m in moves:
-            delta = best_eval - m["eval"]
-            exp = -delta / max(temperature, 1)
-            exp = max(exp, -20)  # prevent underflow
-            weights.append(math.exp(exp))
+        moves, weights = [], []
+        for m in candidates:
+            loss = best_eval - m["eval"]
+            exponent = -loss / max(temperature, 1.0)
+            exponent += strength * self._human_prior(board, m["move"])
+            exponent = max(-30.0, min(30.0, exponent))
+            moves.append(m["move"])
+            weights.append(math.exp(exponent))
 
         total = sum(weights)
-        if total == 0:
-            return moves[0]["move"]
+        if total <= 0:
+            return pool[0]["move"]
+        return random.choices(moves, weights=weights, k=1)[0]
 
-        return random.choices(
-            [m["move"] for m in moves], weights=weights, k=1
-        )[0]
+    # ------------------------------------------------------------------
+    # Closed-loop controller
+    # ------------------------------------------------------------------
+
+    def _run_controller(self) -> None:
+        """Nudge the error budget so realized ELO tracks the target.
+
+        Realized above target -> playing too strong -> loosen (raise gain).
+        Realized below target -> playing too weak -> tighten (lower gain).
+        """
+        realized = self._realized.get_estimate()
+        if realized is None:
+            return
+        error = realized - self._target_elo  # +ve = too strong
+        step = max(-0.15, min(0.15, error / 900.0))
+        self._temp_gain *= math.exp(step)
+        self._temp_gain = max(0.3, min(6.0, self._temp_gain))
 
     # ------------------------------------------------------------------
     # Bookkeeping
     # ------------------------------------------------------------------
 
-    def _record(self, top_moves: list[dict], chosen: str):
+    def _record(self, top_moves: list[dict], chosen: str, loss: int) -> None:
         if chosen == top_moves[0]["move"]:
             self._consecutive_best += 1
+            self._best_move_hits += 1
         else:
             self._consecutive_best = 0
         self._move_number += 1
+        self._total_moves += 1
+        self._total_cpl += loss
+        self._realized.record_move(loss)
+
+    def _safe_board(self, fen: str) -> chess.Board | None:
+        try:
+            return chess.Board(fen)
+        except ValueError:
+            return None
+
+    def _log(self, chosen, top_moves, loss, temperature, coasting) -> None:
+        tag = "*" if chosen == top_moves[0]["move"] else " "
+        realized = self.get_realized_elo()
+        realized_s = f"{realized}" if realized is not None else "--"
+        print(
+            f"  [{tag}] move={chosen}  loss={loss}cp  temp={temperature:.0f}  "
+            f"target={self._target_elo}  realized={realized_s}  "
+            f"gain={self._temp_gain:.2f}  margin={self._target_margin}  "
+            f"crit={self.last_criticality:.2f}  coast={int(coasting)}"
+        )
