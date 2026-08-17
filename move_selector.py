@@ -28,6 +28,16 @@ Four coupled mechanisms:
 4. **Closed-loop ELO controller.** The bot's own move losses feed a live
    "realized ELO". A slow controller nudges the error budget until realized
    ELO matches the target the user asked for.
+
+5. **Opponent adaptation.** The menu ELO is only a prior. As the opponent's
+   own moves reveal their strength, the *effective* ELO we imitate drifts
+   toward "a bit better than them" (the edge is sampled per game, so some
+   games are close and some comfortable). On top of that, every move asks
+   the human question — "do I have to play a good move here, or am I ahead
+   enough against *this* opponent to afford a realistic small slip?" — via
+   a risk appetite built from the eval cushion and the opponent's strength.
+   The goal is to beat the opponent the way a slightly better human would,
+   not the way an engine would.
 """
 
 from __future__ import annotations
@@ -65,6 +75,13 @@ class HumanMoveSelector:
         self.engine = engine
         self._target_elo: int = self.DEFAULT_TARGET_ELO
         self._opponent_elo: int | None = None
+        self._opponent_moves: int = 0
+        # How far above the opponent we aim to play this game (ELO). Sampled
+        # per game so results vary like a real slightly-better player's.
+        self._opp_edge: int = self._sample_opp_edge()
+        # Smoothed effective ELO: our read on the opponent firms up over
+        # moves rather than lurching with every noisy estimate update.
+        self._eff_elo: float = float(self.DEFAULT_TARGET_ELO)
 
         # Per-game state
         self._eval_history: list[int] = []
@@ -100,13 +117,24 @@ class HumanMoveSelector:
     def set_target_elo(self, elo: int) -> None:
         """Set the strength the suggestions should imitate."""
         self._target_elo = int(max(300, min(3000, elo)))
+        self._eff_elo = float(self._target_elo)
 
     def get_target_elo(self) -> int:
         return self._target_elo
 
-    def set_opponent_elo(self, elo: int | None) -> None:
-        """Update estimated opponent strength (used to bound risk)."""
+    def set_opponent_elo(self, elo: int | None, moves: int | None = None) -> None:
+        """Update estimated opponent strength and how many of their moves it
+        rests on (confidence). Drives the effective ELO and risk appetite."""
         self._opponent_elo = elo
+        if moves is not None:
+            self._opponent_moves = moves
+        elif elo is not None:
+            self._opponent_moves = max(self._opponent_moves, 12)  # trust it
+
+    def get_effective_elo(self) -> int:
+        """The strength actually being imitated right now (target adapted
+        toward the opponent)."""
+        return self._effective_elo()
 
     def get_realized_elo(self) -> int | None:
         """The bot's own live ELO, estimated from the moves it has picked."""
@@ -124,6 +152,7 @@ class HumanMoveSelector:
         best_eval = top_moves[0]["eval"]
         self.last_best_eval = best_eval
         self.last_criticality = self._compute_criticality(top_moves)
+        self._update_effective_elo()
 
         if len(top_moves) == 1:
             self._record(top_moves, top_moves[0]["move"], 0)
@@ -135,6 +164,10 @@ class HumanMoveSelector:
         # (recaptures, tactics) collapse this toward zero so the obvious move
         # gets played; quiet positions leave room for human imprecision.
         ceiling = self._loss_ceiling(self.last_criticality)
+        # ...then ask the human question: is there room for a slip against
+        # this opponent, or does this position need a good move?
+        cushion = self._cushion(best_eval)
+        ceiling = self._bound_ceiling_by_cushion(ceiling, cushion)
 
         # Optionally surface a tempting-but-bad move (the classic human
         # blunder) so weak play isn't capped at the engine's Nth-best.
@@ -153,7 +186,7 @@ class HumanMoveSelector:
         loss = max(0, best_eval - chosen_eval)
         self._record(top_moves, chosen, loss)
         self._run_controller()
-        self._log(chosen, top_moves, loss, temperature, coasting)
+        self._log(chosen, top_moves, loss, temperature, coasting, cushion)
         return chosen
 
     def get_accuracy(self) -> float | None:
@@ -173,6 +206,9 @@ class HumanMoveSelector:
         self._consecutive_best = 0
         self._recent_moves.clear()
         self._opponent_elo = None
+        self._opponent_moves = 0
+        self._opp_edge = self._sample_opp_edge()
+        self._eff_elo = float(self._target_elo)
         self._temp_gain = 1.0
         self._realized.reset()
         self._total_moves = 0
@@ -197,13 +233,13 @@ class HumanMoveSelector:
         draw from top-N candidates, whose losses are bounded), so weak play
         needs a temperature well above its target ACPL to actually spread.
         """
-        acpl = elo_to_acpl(self._target_elo)
+        acpl = elo_to_acpl(self._effective_elo())
         weakness = self._naturalness_strength()
         return max(6.0, min(800.0, acpl * (1.9 + 3.4 * weakness)))
 
     def _num_candidates(self) -> int:
         """Weak players consider more (and worse) moves than strong ones."""
-        n = round(5 + (1900 - self._target_elo) / 110)
+        n = round(5 + (1900 - self._effective_elo()) / 110)
         return int(max(4, min(self.NUM_CANDIDATES_MAX, n)))
 
     def _loss_ceiling(self, criticality: float) -> float:
@@ -224,7 +260,7 @@ class HumanMoveSelector:
         # multiples above the level's typical loss so the normal human spread
         # passes through untouched and only the disaster tail is cut. The
         # softmax temperature does the fine shaping.
-        acpl = elo_to_acpl(self._target_elo)
+        acpl = elo_to_acpl(self._effective_elo())
         ceiling = acpl * 5.0 * (1.0 - 0.85 * criticality)
         # Opening discipline: humans play near-book early, so hug the best
         # moves for the first few plies instead of drifting into a passive,
@@ -239,7 +275,104 @@ class HumanMoveSelector:
         Strong at low ELO, fades to ~0 by ~1900 where players calculate
         rather than react to how a move looks.
         """
-        return max(0.0, min(1.0, (1900 - self._target_elo) / 1300))
+        return max(0.0, min(1.0, (1900 - self._effective_elo()) / 1300))
+
+    # ------------------------------------------------------------------
+    # Opponent adaptation: effective ELO and per-move risk appetite
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sample_opp_edge() -> int:
+        """How much stronger than the opponent we try to be this game.
+
+        Centred on a modest edge (a slightly better human, who usually wins
+        but not always); occasionally near parity (a genuinely close game,
+        which we may lose) or comfortably ahead.
+        """
+        edge = random.gauss(90, 55)
+        return int(max(-10, min(200, edge)))
+
+    def _opponent_confidence(self) -> float:
+        """0 = no idea who we're playing, 1 = estimate is trustworthy."""
+        if self._opponent_elo is None:
+            return 0.0
+        return max(0.0, min(1.0, (self._opponent_moves - 3) / 9.0))
+
+    def _wanted_elo(self) -> float:
+        """Where the effective ELO should head: the menu target as a prior,
+        pulled toward (opponent + edge) as the opponent's strength becomes
+        clear. Bounded to +-300 around the target so the user's choice still
+        means something (a '1600' bot never turns into a 2300 or a 900)."""
+        conf = self._opponent_confidence()
+        if conf <= 0.0:
+            return float(self._target_elo)
+        wanted = self._opponent_elo + self._opp_edge
+        wanted = max(self._target_elo - 300, min(self._target_elo + 300, wanted))
+        # Keep a little pull toward the menu target even at full confidence.
+        return self._target_elo + conf * 0.85 * (wanted - self._target_elo)
+
+    def _update_effective_elo(self) -> None:
+        """Drift the effective ELO toward the wanted value (once per move)."""
+        self._eff_elo += 0.3 * (self._wanted_elo() - self._eff_elo)
+
+    def _effective_elo(self) -> int:
+        """The ELO we imitate right now (smoothed, opponent-adapted)."""
+        return int(round(self._eff_elo))
+
+    def _opponent_gap(self) -> float:
+        """Opponent ELO minus ours (positive = they are the stronger side),
+        scaled by confidence. 0 when unknown."""
+        conf = self._opponent_confidence()
+        if conf <= 0.0:
+            return 0.0
+        return conf * (self._opponent_elo - self._effective_elo())
+
+    def _cushion_floor(self) -> int:
+        """The eval we would rather not sink below against this opponent.
+
+        A stronger opponent punishes slips, so we keep more in hand; a
+        weaker one gives things back, so equality is an acceptable place
+        to drift to.
+        """
+        floor = 40 + 0.35 * self._opponent_gap()
+        return int(max(-40, min(220, floor)))
+
+    def _cushion(self, best_eval: int) -> int:
+        """How much eval we can spend before dipping under the floor.
+        Negative = we are already below where we want to be."""
+        if best_eval >= _MATE_CP:
+            return 2000
+        if best_eval <= -_MATE_CP:
+            return -2000
+        return best_eval - self._cushion_floor()
+
+    def _risk_appetite(self, cushion: int) -> float:
+        """Temperature multiplier: relax when there is room for a slip,
+        bear down when the position needs a good move.
+
+        Asymmetric on purpose — we relax gently when ahead but tighten
+        hard when behind, which is also how a human who wants to win
+        plays: careless when comfortable, focused when in trouble.
+        """
+        if cushion >= 0:
+            return 1.0 + 0.5 * min(1.0, cushion / 250.0)
+        return max(0.4, 1.0 + cushion / 400.0)
+
+    def _bound_ceiling_by_cushion(self, ceiling: float, cushion: int) -> float:
+        """Shrink the allowed one-move error to what we can afford.
+
+        Ahead: never spend more than a slice of the lead in one move — a
+        realistic *small* mistake, not one that hands the game back.
+        Behind: the ceiling contracts so we stop making things worse.
+        The floor of the bound scales with ELO so a weak level still gets
+        its characteristic imprecision in equal positions.
+        """
+        acpl = elo_to_acpl(self._effective_elo())
+        if cushion >= 0:
+            spendable = acpl * 1.8 + 0.6 * cushion
+            return max(12.0, min(ceiling, spendable))
+        shrink = max(0.5, 1.0 + cushion / 500.0)
+        return max(12.0, ceiling * shrink)
 
     # ------------------------------------------------------------------
     # Temperature: combine ELO budget, phase, danger, and the governor
@@ -262,12 +395,9 @@ class HumanMoveSelector:
         # An obvious best move gets found even by weaker players.
         temp *= 1.0 - 0.6 * self.last_criticality
 
-        # Danger: when losing, fight harder (tighten). This is asymmetric —
-        # we relax when ahead but bear down when behind.
-        if best_eval <= -250:
-            temp *= 0.4
-        elif best_eval <= -80:
-            temp *= 0.7
+        # Risk appetite: room for a slip against this opponent -> relax;
+        # position needs a good move -> bear down. Asymmetric by design.
+        temp *= self._risk_appetite(self._cushion(best_eval))
         temp *= 1.0 - 0.4 * self._trend_urgency()
 
         # Anti-domination governor: crushing beyond our target margin ->
@@ -325,8 +455,10 @@ class HumanMoveSelector:
 
     def _win_floor(self) -> int:
         """Never coast into a move that drops eval below this — the win is
-        protected. Scales with how much of a cushion we sampled."""
-        return max(90, int(self._target_margin * 0.5))
+        protected. Scales with how much of a cushion we sampled, and with
+        the opponent: a stronger one gets less rope."""
+        floor = self._target_margin * 0.5 + 0.3 * self._opponent_gap()
+        return int(max(70, min(320, floor)))
 
     # ------------------------------------------------------------------
     # Human-plausibility prior
@@ -544,7 +676,7 @@ class HumanMoveSelector:
         realized = self._realized.get_estimate()
         if realized is None:
             return
-        error = realized - self._target_elo  # +ve = too strong
+        error = realized - self._effective_elo()  # +ve = too strong
         step = max(-0.15, min(0.15, error / 900.0))
         self._temp_gain *= math.exp(step)
         self._temp_gain = max(0.3, min(6.0, self._temp_gain))
@@ -575,13 +707,17 @@ class HumanMoveSelector:
         except ValueError:
             return None
 
-    def _log(self, chosen, top_moves, loss, temperature, coasting) -> None:
+    def _log(self, chosen, top_moves, loss, temperature, coasting,
+             cushion) -> None:
         tag = "*" if chosen == top_moves[0]["move"] else " "
         realized = self.get_realized_elo()
         realized_s = f"{realized}" if realized is not None else "--"
+        opp_s = f"{self._opponent_elo}" if self._opponent_elo is not None else "--"
         print(
             f"  [{tag}] move={chosen}  loss={loss}cp  temp={temperature:.0f}  "
-            f"target={self._target_elo}  realized={realized_s}  "
+            f"target={self._target_elo}  eff={self._effective_elo()}  "
+            f"opp={opp_s}(+{self._opp_edge})  realized={realized_s}  "
             f"gain={self._temp_gain:.2f}  margin={self._target_margin}  "
-            f"crit={self.last_criticality:.2f}  coast={int(coasting)}"
+            f"cushion={cushion}  crit={self.last_criticality:.2f}  "
+            f"coast={int(coasting)}"
         )
