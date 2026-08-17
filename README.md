@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/banner.svg" alt="Chess Vision" width="100%"/>
+  <img src="https://cdn.jsdelivr.net/gh/Kryskata-C/chessbot@main/assets/banner.svg" alt="Chess Vision" width="100%"/>
 </p>
 
 <h3 align="center">👁️ It sees the board. 🧠 It thinks like a human. ⚡ It plays to <em>your</em> opponent.</h3>
@@ -44,7 +44,7 @@ The bot is not built to win every game. It is built to **beat the opponent the w
 ## ⚡ The Pipeline
 
 <p align="center">
-  <img src="assets/architecture.svg" alt="Architecture" width="100%"/>
+  <img src="https://cdn.jsdelivr.net/gh/Kryskata-C/chessbot@main/assets/architecture.svg" alt="Architecture" width="100%"/>
 </p>
 
 ### 👁️ Stage 1 — Vision
@@ -262,7 +262,7 @@ Real-game tuning is ongoing. The console log prints every decision:
 ## ✨ Stage 5 — The Overlay
 
 <p align="center">
-  <img src="assets/features.svg" alt="Features" width="100%"/>
+  <img src="https://cdn.jsdelivr.net/gh/Kryskata-C/chessbot@main/assets/features.svg" alt="Features" width="100%"/>
 </p>
 
 A transparent PyQt6 window pinned above **everything** via native Cocoa calls (`ctypes`): `NSScreenSaverWindowLevel` (level 1000), `setIgnoresMouseEvents:YES` for full click-through, `canJoinAllSpaces` so it follows you across desktops, and it excludes itself from screen capture so it never sees its own arrows.
