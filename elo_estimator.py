@@ -51,10 +51,10 @@ class EloEstimator:
     def record_move(self, cpl: float) -> None:
         """Record centipawn loss for one move."""
         cpl = max(0.0, min(cpl, self.MAX_CPL))
-        if self._move_count == 0:
-            self._ema_cpl = cpl
-        else:
-            self._ema_cpl = self.EMA_ALPHA * cpl + (1 - self.EMA_ALPHA) * self._ema_cpl
+        # Warm-up: a plain running mean for the first few moves (so one
+        # early move can't dominate), then settle into the EMA.
+        alpha = max(self.EMA_ALPHA, 1.0 / (self._move_count + 1))
+        self._ema_cpl = alpha * cpl + (1 - alpha) * self._ema_cpl
         self._move_count += 1
 
     def get_estimate(self) -> int | None:
