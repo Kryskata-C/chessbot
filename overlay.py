@@ -63,6 +63,7 @@ class DebugBoardWindow(QWidget):
         self.bot_accuracy: float | None = None
         self.bot_cpl: float | None = None
         self.target_elo: int | None = None
+        self.bot_effective_elo: int | None = None
         self.bot_realized_elo: int | None = None
 
         size = self.SQUARE_PX * 8 + 40  # board + margins for labels
@@ -96,6 +97,7 @@ class DebugBoardWindow(QWidget):
                       bot_accuracy: float | None = None,
                       bot_cpl: float | None = None,
                       target_elo: int | None = None,
+                      bot_effective_elo: int | None = None,
                       bot_realized_elo: int | None = None):
         self.positions = positions
         self.white_on_bottom = white_on_bottom
@@ -106,6 +108,7 @@ class DebugBoardWindow(QWidget):
         self.bot_accuracy = bot_accuracy
         self.bot_cpl = bot_cpl
         self.target_elo = target_elo
+        self.bot_effective_elo = bot_effective_elo
         self.bot_realized_elo = bot_realized_elo
         self.update()
 
@@ -197,7 +200,11 @@ class DebugBoardWindow(QWidget):
         if self.target_elo is not None:
             realized_str = (f"{self.bot_realized_elo}"
                             if self.bot_realized_elo is not None else "…")
-            bot_text = f"Bot ELO: {self.target_elo} target · {realized_str} realized"
+            eff = self.bot_effective_elo
+            eff_str = (f" · {eff} eff" if eff is not None and eff != self.target_elo
+                       else "")
+            bot_text = (f"Bot ELO: {self.target_elo} target{eff_str} · "
+                        f"{realized_str} realized")
         else:
             bot_text = "Bot ELO: --"
         painter.drawText(margin, bot_y, bot_text)

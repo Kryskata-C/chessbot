@@ -895,7 +895,9 @@ class ChessVision(QObject):
             # Feed opponent ELO estimate to move selector for adaptive play
             elo_est = self.elo_estimator.get_estimate()
             acpl = self.elo_estimator.get_acpl()
-            self.move_selector.set_opponent_elo(elo_est)
+            self.move_selector.set_opponent_elo(
+                elo_est, self.elo_estimator.get_move_count()
+            )
 
             # Update debug board GUI
             self._gui("debug", {
@@ -908,6 +910,7 @@ class ChessVision(QObject):
                 "bot_accuracy": self.move_selector.get_accuracy(),
                 "bot_cpl": self.move_selector.get_avg_cpl(),
                 "target_elo": self.move_selector.get_target_elo(),
+                "bot_effective_elo": self.move_selector.get_effective_elo(),
                 "bot_realized_elo": self.move_selector.get_realized_elo(),
             })
 
