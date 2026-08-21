@@ -81,7 +81,7 @@ Raw recognition is noisy: mid-animation frames, hover highlights, premove arrows
 Stockfish (depth 12, 2 threads, 128 MB hash) in **MultiPV** mode returns the top-$N$ candidates with centipawn evaluations; mates are mapped to $\pm 10^5$. The human layer decides how many candidates it even wants to see:
 
 $$
-N = \operatorname{clamp}\!\Big(\big\lfloor 5 + \tfrac{1900 - E}{110} \big\rceil,\; 4,\; 16\Big)
+N = \mathrm{clamp}\!\Big(\big\lfloor 5 + \tfrac{1900 - E}{110} \big\rceil,\; 4,\; 16\Big)
 $$
 
 A 2000 plays from ~4 moves. An 800 weighs ~15 (and most of them are bad).
@@ -121,7 +121,7 @@ $$
 Three terms, three ideas:
 
 - **$T$ — temperature.** How much regret we're willing to spend. Hot = weak. Built from a stack of multipliers (below).
-- **$\pi(m)$ — human prior.** How *tempting* the move looks to a human, scaled by weakness $w = \operatorname{clamp}\!\big(\tfrac{1900 - E}{1300},0,1\big)$. Weak players react to how a move *looks*; strong players calculate.
+- **$\pi(m)$ — human prior.** How *tempting* the move looks to a human, scaled by weakness $w = \mathrm{clamp}\!\big(\tfrac{1900 - E}{1300},0,1\big)$. Weak players react to how a move *looks*; strong players calculate.
 - **$\kappa(m)$ — coherence.** Penalizes un-human sequences (Ra2 then Ra1).
 - **$L_{\max}$ — the ceiling.** A hard cutoff on single-move error. This is what makes a 1600 *never* hang a piece for nothing.
 
@@ -150,7 +150,7 @@ Applied at every ELO — nobody good shuffles. Because it's additive in the expo
 ### 4.3 — Temperature: the multiplier stack
 
 $$
-T = \underbrace{\operatorname{clamp}\big(\text{acpl}(E)\,(1.9 + 3.4w),\,6,\,800\big)}_{T_{\text{base}}}
+T = \underbrace{\mathrm{clamp}\big(\text{acpl}(E)\,(1.9 + 3.4w),\,6,\,800\big)}_{T_{\text{base}}}
 \cdot g
 \cdot f_{\text{open}}
 \cdot f_{\text{end}}
@@ -166,7 +166,7 @@ $$
 | $g$ | closed-loop gain (§4.5) | tunes realized ELO onto target |
 | $f_{\text{open}}$ | $0.5 + 0.45\cdot\tfrac{n}{6}$ for plies $n<6$ | near-book early |
 | $f_{\text{end}}$ | $0.7$ if $\le 12$ pieces | endgames are forcing |
-| $c$ — criticality | $\operatorname{clamp}\!\big(\tfrac{(v_1 - v_2) - 30}{170},0,1\big)$ | one obvious move → everyone finds it |
+| $c$ — criticality | $\mathrm{clamp}\!\big(\tfrac{(v_1 - v_2) - 30}{170},0,1\big)$ | one obvious move → everyone finds it |
 | $A(C)$ — risk appetite | §4.6 | relax when ahead, bear down when behind |
 | $u$ — trend urgency | OLS slope of last 6 evals; $u = \min(1, \lvert\beta\rvert/100)$ if $\beta<0$ | sliding downhill → focus |
 | $f_{\text{coast}}$ | $1 + \min\!\big(\tfrac{v^\star - M}{M}, 1.5\big)$ when $v^\star > M$ | anti-domination governor |
@@ -189,7 +189,7 @@ The engine's top-$N$ are all *reasonable*. Real weak-player blunders live furthe
 Each game samples a **target margin** $M \sim \mathcal{N}(260, 110)$ clamped to $[90, 650]$ cp. Below it, play normally. Above it, *coast* — the temperature rises and only moves keeping the eval above a **win floor** are allowed:
 
 $$
-\text{floor}_{\text{win}} = \operatorname{clamp}\big(0.5M + 0.3\,\gamma,\; 70,\; 320\big)
+\text{floor}_{\text{win}} = \mathrm{clamp}\big(0.5M + 0.3\,\gamma,\; 70,\; 320\big)
 $$
 
 so a won game is never thrown, but it's also never a 40-move rout. Some games are close, some comfortable — like a real player's.
@@ -197,7 +197,7 @@ so a won game is never thrown, but it's also never a 40-move rout. Some games ar
 Meanwhile a slow **proportional controller** measures the bot's own realized ELO $E_r$ (its chosen-move losses through the ACPL curve) and nudges the gain:
 
 $$
-g \leftarrow g\cdot\exp\!\Big(\operatorname{clamp}\!\big(\tfrac{E_r - E_{\text{eff}}}{900},\,-0.15,\,0.15\big)\Big), \qquad g\in[0.3, 6]
+g \leftarrow g\cdot\exp\!\Big(\mathrm{clamp}\!\big(\tfrac{E_r - E_{\text{eff}}}{900},\,-0.15,\,0.15\big)\Big), \qquad g\in[0.3, 6]
 $$
 
 Playing too strong → loosen. Too weak → tighten. It converges within a game.
@@ -207,8 +207,8 @@ Playing too strong → loosen. Too weak → tighten. It converges within a game.
 The menu ELO is only a **prior**. The bot watches the opponent's moves, estimates their rating $E_o$ from their ACPL, and drifts the ELO it imitates toward *"a bit better than them"*:
 
 $$
-\text{conf} = \operatorname{clamp}\!\Big(\tfrac{n_o - 3}{9},0,1\Big),\qquad
-E_{\text{want}} = E_t + 0.85\cdot\text{conf}\cdot\Big(\operatorname{clamp}(E_o + \varepsilon,\; E_t \pm 300) - E_t\Big)
+\text{conf} = \mathrm{clamp}\!\Big(\tfrac{n_o - 3}{9},0,1\Big),\qquad
+E_{\text{want}} = E_t + 0.85\cdot\text{conf}\cdot\Big(\mathrm{clamp}(E_o + \varepsilon,\; E_t \pm 300) - E_t\Big)
 $$
 
 $$
@@ -220,7 +220,7 @@ where the **edge** $\varepsilon \sim \mathcal{N}(90, 55)$ clamped to $[-10, 200]
 Then, **every single move**, the risk question. Let $\gamma = \text{conf}\cdot(E_o - E_{\text{eff}})$ be the strength gap (positive = they're better). The **cushion** is how much eval we can spend before dipping under an opponent-aware floor:
 
 $$
-C = v^\star - \operatorname{clamp}(40 + 0.35\gamma,\,-40,\,220)
+C = v^\star - \mathrm{clamp}(40 + 0.35\gamma,\,-40,\,220)
 $$
 
 A stronger opponent punishes slips → keep more in hand. A weaker one gives it back → equality is fine to drift to. The cushion drives both the temperature and the ceiling:
