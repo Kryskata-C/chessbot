@@ -226,6 +226,39 @@ def detect_orientation(positions: list[list[str | None]]) -> bool:
     return white_bottom >= white_top
 
 
+def detect_player_color(positions: list[list[str | None]]) -> str | None:
+    """Guess which color the player is from screen-bottom piece majority.
+
+    On chess.com the player's pieces always start at the bottom, so a
+    clear majority of one color in the bottom two rows (with the other
+    color on top) identifies the player. Returns "w"/"b" only when both
+    halves agree unambiguously, None otherwise. Only trustworthy near
+    the start of a game — pieces invade the far side in endgames, so
+    the result must be locked in once and never re-guessed mid-game.
+    """
+    w_bottom = b_bottom = w_top = b_top = 0
+    for col in range(8):
+        for row in (6, 7):
+            p = positions[row][col]
+            if p:
+                if p.isupper():
+                    w_bottom += 1
+                else:
+                    b_bottom += 1
+        for row in (0, 1):
+            p = positions[row][col]
+            if p:
+                if p.isupper():
+                    w_top += 1
+                else:
+                    b_top += 1
+    if w_bottom - b_bottom >= 4 and b_top - w_top >= 4:
+        return "w"
+    if b_bottom - w_bottom >= 4 and w_top - b_top >= 4:
+        return "b"
+    return None
+
+
 def positions_to_fen(
     positions: list[list[str | None]],
     turn: str = "w",
