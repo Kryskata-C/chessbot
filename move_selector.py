@@ -14,10 +14,14 @@ Four coupled mechanisms:
 
 2. **Human-plausibility prior.** Every candidate is re-weighted by how a
    human would *feel* about it: captures / checks / forward moves are
-   tempting; quiet moves, retreats, and moves that hang a piece (the
-   engine's brilliant sacrifices) are under-selected. Scaled by weakness,
-   so the inserted error lands exactly where a human misses — never as an
-   obvious out-of-nowhere blunder.
+   tempting; quiet moves, retreats, and moves that give up material (the
+   engine's brilliant sacrifices, judged by static exchange) are
+   under-selected. Scaled by weakness, so the inserted error lands exactly
+   where a human misses — never as an obvious out-of-nowhere blunder.
+   On top of that, a sacrifice filter removes engine brilliancies from the
+   candidate list outright — before the criticality machinery can declare
+   them "forced" — unless the imitated level would plausibly see them or
+   the sacrifice is the only move that keeps the game alive.
 
 3. **Anti-domination governor.** Each game samples a target winning margin
    (so results vary: sometimes close, sometimes comfortable). When we are
@@ -62,6 +66,8 @@ _PIECE_VALUE = {
 
 _MATE_CP = 100000
 _WINNING_CP = 150   # eval above this = "we are winning"
+_SAC_NET = -160        # net material loss (cp) that marks a move as a sacrifice
+_SAC_KEEP_FLOOR = -80  # declining a sacrifice must leave at least this eval
 
 
 class HumanMoveSelector:
@@ -143,11 +149,15 @@ class HumanMoveSelector:
     def select_move(self, fen: str, piece_count: int) -> str | None:
         """Pick a human-like move. Returns a UCI string, or None if none."""
         top_moves = self.engine.get_top_moves(fen, self._num_candidates())
-        self.last_top_moves = top_moves or []
         if not top_moves:
+            self.last_top_moves = []
             self.last_criticality = 0.0
             self.last_best_eval = None
             return self.engine.get_best_move(fen)
+
+        board = self._safe_board(fen)
+        top_moves = self._filter_sacrifices(board, top_moves)
+        self.last_top_moves = top_moves
 
         best_eval = top_moves[0]["eval"]
         self.last_best_eval = best_eval
@@ -173,7 +183,6 @@ class HumanMoveSelector:
         # blunder) so weak play isn't capped at the engine's Nth-best.
         pool = self._augment_with_temptations(fen, top_moves, best_eval, ceiling)
 
-        board = self._safe_board(fen)
         temperature, coasting = self._compute_temperature(best_eval, piece_count)
 
         chosen = self._weighted_select(
@@ -461,6 +470,100 @@ class HumanMoveSelector:
         return int(max(70, min(320, floor)))
 
     # ------------------------------------------------------------------
+    # Brilliancy suppression: sub-elite humans do not find engine
+    # sacrifices, so the imitation must not play them either
+    # ------------------------------------------------------------------
+
+    def _sacrifice_vision(self) -> float:
+        """Probability this level spots and trusts a material sacrifice."""
+        return max(0.0, min(1.0, (self._effective_elo() - 1500) / 900.0))
+
+    def _see_capture_value(self, board: chess.Board, to_sq: chess.Square) -> int:
+        """Best material (cp) the side to move can net by capturing on to_sq.
+
+        Static exchange: capture with the least valuable attacker, let the
+        opponent do the same, and never continue a losing sequence. Using
+        legal moves makes (absolutely) pinned pieces sit the exchange out.
+        """
+        occupant = board.piece_at(to_sq)
+        if occupant is None:
+            return 0
+        caps = [m for m in board.legal_moves
+                if m.to_square == to_sq and board.is_capture(m)]
+        if not caps:
+            return 0
+        cap = min(caps, key=lambda m: _PIECE_VALUE.get(
+            board.piece_at(m.from_square).piece_type, 0))
+        gain = _PIECE_VALUE.get(occupant.piece_type, 0)
+        board.push(cap)
+        net = gain - self._see_capture_value(board, to_sq)
+        board.pop()
+        return max(0, net)
+
+    def _move_material_net(self, board: chess.Board, move: chess.Move) -> int:
+        """Net material (cp) a move stands to gain or give up on its landing
+        square once exchanges resolve. Clearly negative = a sacrifice."""
+        if move.promotion:
+            return 0  # promotions have their own bonus; never call them sacs
+        gain = 0
+        if board.is_capture(move):
+            if board.is_en_passant(move):
+                gain = 100
+            else:
+                victim = board.piece_at(move.to_square)
+                gain = _PIECE_VALUE.get(victim.piece_type, 0) if victim else 0
+        board.push(move)
+        lost = self._see_capture_value(board, move.to_square)
+        board.pop()
+        return gain - lost
+
+    def _filter_sacrifices(
+        self, board: chess.Board | None, top_moves: list[dict]
+    ) -> list[dict]:
+        """Drop engine sacrifices ("brilliancies") the imitated level would
+        not find, when a sound ordinary move exists.
+
+        The criticality/ceiling machinery treats a big eval gap as "obvious,
+        must-play" — true for a recapture, false for a deep sacrifice that
+        is obvious only to the engine. Removing the sacrifice *before* that
+        machinery runs makes the bot play the human move: the best line it
+        never saw simply doesn't exist for it.
+        """
+        if board is None or len(top_moves) < 2:
+            return top_moves
+        if random.random() < self._sacrifice_vision():
+            return top_moves  # this level spots it this time
+
+        nets: dict[str, int] = {}
+        for m in top_moves:
+            try:
+                mv = chess.Move.from_uci(m["move"])
+            except ValueError:
+                continue
+            if mv in board.legal_moves:
+                nets[m["move"]] = self._move_material_net(board, mv)
+        sacs = [m for m in top_moves if nets.get(m["move"], 0) <= _SAC_NET]
+        if not sacs:
+            return top_moves
+        non_sac = [m for m in top_moves if nets.get(m["move"], 0) > _SAC_NET]
+        if not non_sac:
+            return top_moves  # every option gives up material — play on
+
+        # Declining must not wreck the game: the best ordinary move has to
+        # keep a playable position, or cost only a human-sized slip. When
+        # the sacrifice is the lone save, even a human digs in and finds it.
+        best_eval = top_moves[0]["eval"]
+        alt_eval = non_sac[0]["eval"]
+        budget = max(120.0, 2.5 * elo_to_acpl(self._effective_elo()))
+        if alt_eval < _SAC_KEEP_FLOOR and best_eval - alt_eval > budget:
+            return top_moves
+        if sacs[0] is top_moves[0]:
+            print(f"  [sac] declined {top_moves[0]['move']} "
+                  f"(net {nets[top_moves[0]['move']]}cp material, "
+                  f"decline costs {best_eval - alt_eval}cp)")
+        return non_sac
+
+    # ------------------------------------------------------------------
     # Human-plausibility prior
     # ------------------------------------------------------------------
 
@@ -484,37 +587,27 @@ class HumanMoveSelector:
         if mover is None:
             return 0.0
 
-        # Checks and captures grab attention.
+        # Checks grab attention.
         if board.gives_check(move):
             bonus += 0.6
+
+        # Material on the landing square once exchanges resolve. A winning
+        # or equal capture is magnetic; a move that *gives up* material —
+        # the engine sacrifice, capture or quiet — is what a human refuses.
+        net = self._move_material_net(board, move)
         if board.is_capture(move):
-            victim = board.piece_at(move.to_square)
-            victim_val = _PIECE_VALUE.get(victim.piece_type, 0) if victim else 100
-            attacker_val = _PIECE_VALUE.get(mover.piece_type, 0)
-            # Winning/equal captures are magnetic; losing captures less so.
-            bonus += 0.7 if victim_val >= attacker_val else 0.15
+            if net >= 0:
+                bonus += 0.7
+            elif net > _SAC_NET:
+                bonus += 0.15
+            else:
+                bonus -= 0.9
+        elif net <= _SAC_NET:
+            bonus -= 0.9
 
         # Promotions are hard to miss.
         if move.promotion == chess.QUEEN:
             bonus += 0.8
-
-        # Apparent hang: landing where a cheaper enemy piece can take, with
-        # no friendly defender. This is exactly the engine sacrifice a weak
-        # human refuses — so we under-select it.
-        if not board.is_capture(move):
-            enemy = not board.turn
-            attackers = board.attackers(enemy, move.to_square)
-            if attackers:
-                cheapest = min(
-                    _PIECE_VALUE.get(board.piece_at(sq).piece_type, 0)
-                    for sq in attackers
-                )
-                mover_val = _PIECE_VALUE.get(mover.piece_type, 0)
-                board.push(move)
-                defended = bool(board.attackers(not enemy, move.to_square))
-                board.pop()
-                if cheapest < mover_val and not defended:
-                    bonus -= 0.9
 
         # Retreats (toward our own back rank) are psychologically avoided.
         from_rank = chess.square_rank(move.from_square)
