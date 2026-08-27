@@ -24,6 +24,7 @@ from board_detector import detect_board
 from piece_recognizer import (
     recognize_board,
     positions_to_fen,
+    detect_player_color,
     get_templates,
     reload_templates,
 )
@@ -36,6 +37,9 @@ from menu import MenuWindow
 SCAN_INTERVAL_MS = 400
 
 STARTING_PLACEMENT = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+# What the starting position reads as when the board orientation is the
+# opposite of what we assumed — i.e. a new game where our color flipped.
+STARTING_PLACEMENT_FLIPPED = "RNBKQBNR/PPPPPPPP/8/8/8/8/pppppppp/rnbkqbnr"
 
 # Status colors
 BLUE = QColor(0, 120, 255)
@@ -104,6 +108,13 @@ class ChessVision(QObject):
         self.last_fen_position: str | None = None
         self.last_move: str | None = None
         self.player_color: str | None = None  # "w" or "b"
+        # Auto color detection: guess from which pieces sit at the bottom
+        # of the screen, require agreement across consecutive scans, then
+        # lock in (piece placement can't be trusted once the game advances)
+        self._auto_color: bool = False
+        self._color_guess: str | None = None
+        self._color_votes: int = 0
+        self._COLOR_STABLE_SCANS = 2
         self.target_elo: int = HumanMoveSelector.DEFAULT_TARGET_ELO
         self.current_turn: str = "w"  # white always moves first
         self.running = True
@@ -192,11 +203,15 @@ class ChessVision(QObject):
         """Called when the user picks a color + strength + visuals and Starts."""
         self.visuals = visuals
         self.overlay.set_visual_config(visuals)
-        self.player_color = color
+        self._auto_color = color == "auto"
+        self.player_color = None if self._auto_color else color
         self.target_elo = target_elo
         self.move_selector.set_target_elo(target_elo)
         self.current_turn = "w"  # white always moves first
-        color_name = "White" if color == "w" else "Black"
+        if self._auto_color:
+            color_name = "Auto-detect"
+        else:
+            color_name = "White" if color == "w" else "Black"
         print(f"Playing as: {color_name}  (target ELO {target_elo})")
 
         if self.has_templates:
@@ -736,6 +751,7 @@ class ChessVision(QObject):
                                     cv2.COLOR_BGR2GRAY)
                 cells = gray.reshape(8, 8, 8, 8).mean(axis=(1, 3))
                 if (self._last_cells is not None
+                        and self.player_color is not None
                         and self._pending_fen is None
                         and self._king_miss_scans == 0
                         and float(np.abs(cells - self._last_cells).max()) < 5.0):
@@ -744,9 +760,31 @@ class ChessVision(QObject):
                 self._last_cells = cells
 
             positions = recognize_board(screenshot, board)
-            # The player's pieces are always at the bottom on chess.com, so
-            # orientation follows from the chosen color. Never guess it from
-            # piece placement — that flips in endgames when pieces advance.
+
+            # Auto color: guess from which pieces sit at the bottom of the
+            # screen (the player's pieces are always at the bottom on
+            # chess.com), then lock in. Guessing is only safe early — the
+            # placement signal flips in endgames when pieces advance.
+            if self.player_color is None:
+                guess = detect_player_color(positions)
+                if guess is None:
+                    self._color_guess, self._color_votes = None, 0
+                    self._status("Detecting your color...", ORANGE)
+                    return
+                if guess == self._color_guess:
+                    self._color_votes += 1
+                else:
+                    self._color_guess, self._color_votes = guess, 1
+                if self._color_votes < self._COLOR_STABLE_SCANS:
+                    return
+                self.player_color = guess
+                self._color_guess, self._color_votes = None, 0
+                color_name = "White" if guess == "w" else "Black"
+                print(f"Auto-detected color: {color_name}")
+                self._status(f"Detected: playing as {color_name}",
+                             GREEN, duration_ms=3000)
+
+            # Orientation follows from the (chosen or locked-in) color.
             white_on_bottom = self.player_color == "w"
             self._gui("geo", {"board": board_abs, "wob": white_on_bottom})
 
@@ -775,6 +813,18 @@ class ChessVision(QObject):
                 self._reset_game_state()
                 self._status("New game detected!", GREEN, duration_ms=3000)
                 print("New game detected — state reset.")
+                return
+
+            # New game where our color flipped (e.g. a rematch): the start
+            # position read with the old orientation looks mirrored.
+            if (self._auto_color and self._game_over and piece_count >= 30
+                    and fen_position == STARTING_PLACEMENT_FLIPPED):
+                self.player_color = "b" if self.player_color == "w" else "w"
+                self._reset_game_state()
+                color_name = "White" if self.player_color == "w" else "Black"
+                self._status(f"New game — now playing as {color_name}!",
+                             GREEN, duration_ms=3000)
+                print(f"New game detected — color flipped to {color_name}.")
                 return
 
             # In game-over state, keep scanning but skip analysis
