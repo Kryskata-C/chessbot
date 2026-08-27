@@ -128,12 +128,14 @@ class ToggleSwitch(QWidget):
 
 
 class ColorSelect(QWidget):
-    """Segmented White/Black picker with a sliding indicator."""
+    """Segmented Auto/White/Black picker with a sliding indicator."""
+
+    OPTIONS = [("auto", "✦  Auto"), ("w", "♔  White"), ("b", "♚  Black")]
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._color = "w"
-        self._sel = 0.0  # 0 = white side, 1 = black side
+        self._color = "auto"
+        self._sel = 0.0  # segment index the indicator sits on (0..2)
         self.setFixedHeight(46)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._anim = QPropertyAnimation(self, b"selPos", self)
@@ -155,44 +157,45 @@ class ColorSelect(QWidget):
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
             return
-        color = "w" if event.position().x() < self.width() / 2 else "b"
+        n = len(self.OPTIONS)
+        idx = min(n - 1, int(event.position().x() / (self.width() / n)))
+        color = self.OPTIONS[idx][0]
         if color == self._color:
             return
         self._color = color
         self._anim.stop()
         self._anim.setStartValue(self._sel)
-        self._anim.setEndValue(0.0 if color == "w" else 1.0)
+        self._anim.setEndValue(float(idx))
         self._anim.start()
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
+        n = len(self.OPTIONS)
 
         p.setPen(QPen(QColor(255, 255, 255, 20), 1))
         p.setBrush(QColor(22, 29, 43))
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), 12, 12)
 
         # Sliding indicator
-        half = (w - 8) / 2
-        ix = 4 + self._sel * half
-        grad = QLinearGradient(ix, 0, ix + half, 0)
+        seg = (w - 8) / n
+        ix = 4 + self._sel * seg
+        grad = QLinearGradient(ix, 0, ix + seg, 0)
         grad.setColorAt(0, ACCENT_DEEP)
         grad.setColorAt(1, ACCENT)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(grad))
-        p.drawRoundedRect(QRectF(ix, 4, half, h - 8), 9, 9)
+        p.drawRoundedRect(QRectF(ix, 4, seg, h - 8), 9, 9)
 
         # Labels
-        font = QFont("Helvetica Neue", 13, QFont.Weight.DemiBold)
+        font = QFont("Helvetica Neue", 12, QFont.Weight.DemiBold)
         p.setFont(font)
-        white_on = 1.0 - self._sel
-        p.setPen(_lerp_color(TEXT_DIM, QColor(255, 255, 255), white_on))
-        p.drawText(QRectF(0, 0, w / 2, h), Qt.AlignmentFlag.AlignCenter,
-                   "♔  White")
-        p.setPen(_lerp_color(TEXT_DIM, QColor(255, 255, 255), self._sel))
-        p.drawText(QRectF(w / 2, 0, w / 2, h), Qt.AlignmentFlag.AlignCenter,
-                   "♚  Black")
+        for i, (_, label) in enumerate(self.OPTIONS):
+            on = max(0.0, 1.0 - abs(self._sel - i))
+            p.setPen(_lerp_color(TEXT_DIM, QColor(255, 255, 255), on))
+            p.drawText(QRectF(i * w / n, 0, w / n, h),
+                       Qt.AlignmentFlag.AlignCenter, label)
         p.end()
 
 
