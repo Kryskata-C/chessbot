@@ -36,7 +36,7 @@ def make_opponent(elo: int, threads: int = 1) -> Stockfish:
         parameters={
             "Threads": threads,
             "Hash": 64,
-            "UCI_LimitStrength": "true",
+            "UCI_LimitStrength": True,
             "UCI_Elo": max(1320, min(3190, elo)),
         },
     )
