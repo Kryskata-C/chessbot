@@ -98,6 +98,9 @@ class HumanMoveSelector:
         # The bot's own recent moves, for move-to-move coherence (humans
         # don't shuffle a rook out and back, or re-move one piece aimlessly).
         self._recent_moves: list[chess.Move] = []
+        # Placements already reached on our turns: a player with an edge
+        # avoids repeating positions (repetition = draw = losing the edge).
+        self._seen_placements: dict[str, int] = {}
 
         # Anti-domination governor: the winning margin (cp) we try to
         # plateau at this game. Resampled each game for variety.
@@ -229,6 +232,19 @@ class HumanMoveSelector:
         self._record(top_moves, chosen, loss)
         self._run_controller()
         self._log(chosen, top_moves, loss, temperature, coasting, cushion)
+        # Remember the position our move creates, so later turns can steer
+        # away from recreating it (repetition = draw = wasted edge).
+        if board is not None:
+            try:
+                mv = chess.Move.from_uci(chosen)
+                if mv in board.legal_moves:
+                    board.push(mv)
+                    key = board.board_fen()
+                    board.pop()
+                    self._seen_placements[key] = \
+                        self._seen_placements.get(key, 0) + 1
+            except ValueError:
+                pass
         return chosen
 
     def get_accuracy(self) -> float | None:
@@ -247,6 +263,7 @@ class HumanMoveSelector:
         self._move_number = 0
         self._consecutive_best = 0
         self._recent_moves.clear()
+        self._seen_placements.clear()
         self._opponent_elo = None
         self._opponent_moves = 0
         self._opp_edge = self._sample_opp_edge()
@@ -454,6 +471,10 @@ class HumanMoveSelector:
         if piece_count <= 12:
             temp *= 0.7
 
+        # Long games: a human trying to win stops drifting and presses.
+        if self._move_number > 30:
+            temp *= max(0.55, 1.0 - (self._move_number - 30) * 0.012)
+
         # An obvious best move gets found even by weaker players.
         temp *= 1.0 - 0.6 * self.last_criticality
 
@@ -469,7 +490,7 @@ class HumanMoveSelector:
             over = best_eval - self._target_margin
             if over > 0:
                 coasting = True
-                temp *= 1.0 + min(over / max(self._target_margin, 80), 1.5)
+                temp *= 1.0 + min(over / max(self._target_margin, 80), 0.8)
 
         # Avoid a suspiciously perfect streak.
         if self._consecutive_best >= 6:
@@ -519,8 +540,8 @@ class HumanMoveSelector:
         """Never coast into a move that drops eval below this — the win is
         protected. Scales with how much of a cushion we sampled, and with
         the opponent: a stronger one gets less rope."""
-        floor = self._target_margin * 0.5 + 0.3 * self._opponent_gap()
-        return int(max(70, min(320, floor)))
+        floor = self._target_margin * 0.65 + 0.3 * self._opponent_gap()
+        return int(max(90, min(380, floor)))
 
     # ------------------------------------------------------------------
     # Brilliancy suppression: sub-elite humans do not find engine
@@ -714,6 +735,26 @@ class HumanMoveSelector:
             penalty -= 0.35
         return penalty
 
+    def _repetition_penalty(
+        self, board: chess.Board | None, uci: str, best_eval: int
+    ) -> float:
+        """Steer away from recreating positions we've already had when we
+        stand better — a player with an edge doesn't drift into a
+        repetition draw. In truly equal positions repetition stays a
+        legitimate (human) outcome, so no penalty there."""
+        if board is None or best_eval < 100 or not self._seen_placements:
+            return 0.0
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            return 0.0
+        if move not in board.legal_moves:
+            return 0.0
+        board.push(move)
+        seen = self._seen_placements.get(board.board_fen(), 0)
+        board.pop()
+        return -1.5 * seen
+
     # ------------------------------------------------------------------
     # Tempting-but-bad move injection (realistic blunders at low ELO)
     # ------------------------------------------------------------------
@@ -814,6 +855,7 @@ class HumanMoveSelector:
             exponent = -loss / max(temperature, 1.0)
             exponent += strength * self._human_prior(board, m["move"])
             exponent += self._coherence_penalty(m["move"])
+            exponent += self._repetition_penalty(board, m["move"], best_eval)
             exponent = max(-30.0, min(30.0, exponent))
             moves.append(m["move"])
             weights.append(math.exp(exponent))
