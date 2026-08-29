@@ -64,7 +64,9 @@ _PIECE_VALUE = {
     chess.KING: 0,
 }
 
-_MATE_CP = 100000
+# Mate scores arrive as 100000 - 100*N (N = moves to mate), so anything
+# at or above this threshold is "mate is on the board".
+_MATE_CP = 90000
 _WINNING_CP = 150   # eval above this = "we are winning"
 _SAC_NET = -160        # net material loss (cp) that marks a move as a sacrifice
 _SAC_KEEP_FLOOR = -80  # declining a sacrifice must leave at least this eval
@@ -329,8 +331,8 @@ class HumanMoveSelector:
         with ordinary moves); varies between comfortable and dominant, but
         never dips to parity — the point is to win, just believably.
         """
-        edge = random.gauss(170, 50)
-        return int(max(40, min(280, edge)))
+        edge = random.gauss(250, 60)
+        return int(max(150, min(380, edge)))
 
     def _opponent_confidence(self) -> float:
         """0 = no idea who we're playing, 1 = estimate is trustworthy."""
@@ -341,13 +343,13 @@ class HumanMoveSelector:
     def _wanted_elo(self) -> float:
         """Where the effective ELO should head: the menu target as a prior,
         pulled toward (opponent + edge) as the opponent's strength becomes
-        clear. Bounded to +-300 around the target so the user's choice still
-        means something (a '1600' bot never turns into a 2300 or a 900)."""
+        clear. Bounded to +-400 around the target so the user's choice still
+        means something (a '1600' bot never turns into a 2400 or a 900)."""
         conf = self._opponent_confidence()
         if conf <= 0.0:
             return float(self._target_elo)
         wanted = self._opponent_elo + self._opp_edge
-        wanted = max(self._target_elo - 300, min(self._target_elo + 300, wanted))
+        wanted = max(self._target_elo - 400, min(self._target_elo + 400, wanted))
         # Keep a little pull toward the menu target even at full confidence.
         return self._target_elo + conf * 0.85 * (wanted - self._target_elo)
 
