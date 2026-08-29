@@ -196,11 +196,25 @@ class HumanMoveSelector:
         temperature, coasting = self._compute_temperature(best_eval, piece_count)
         if lapse:
             temperature *= 2.5
-            print("  [lapse] attention slip — error guardrails relaxed")
 
         chosen = self._weighted_select(
             board, pool, best_eval, temperature, coasting, ceiling
         )
+
+        # A lapse that finds a plausible-looking mistake commits to it:
+        # the whole point of the heavy tail is that sometimes the human
+        # plays the move without seeing the refutation. Selection among
+        # the lemons is prior-driven (huge temperature mutes the loss
+        # term), so the mistake still looks like one a person would make.
+        if lapse:
+            lemons = [m for m in pool
+                      if 60 <= best_eval - m["eval"] <= ceiling]
+            if lemons and random.random() < 0.6:
+                chosen = self._weighted_select(
+                    board, lemons, best_eval, 1e9, False, ceiling
+                )
+                print("  [lapse] attention slip — played "
+                      f"{chosen} without seeing the refutation")
 
         chosen_eval = next(
             (m["eval"] for m in pool if m["move"] == chosen), best_eval
@@ -720,19 +734,25 @@ class HumanMoveSelector:
 
         known = {m["move"] for m in top_moves}
         tempting: list[chess.Move] = []
+        quiet: list[chess.Move] = []
         for move in board.legal_moves:
             uci = move.uci()
             if uci in known:
                 continue
             if board.is_capture(move) or board.gives_check(move):
                 tempting.append(move)
-        if not tempting:
+            elif force:
+                # A lapse blunder is usually a quiet move that misses the
+                # opponent's idea — captures alone can't model that.
+                quiet.append(move)
+        if not tempting and not quiet:
             return top_moves
 
         random.shuffle(tempting)
+        random.shuffle(quiet)
         pool = list(top_moves)
         n_consider = 3 + int(round(2 * strength))
-        for move in tempting[:n_consider]:
+        for move in tempting[:n_consider] + quiet[:4]:
             board.push(move)
             reply_eval = self.engine.get_evaluation(board.fen(), depth=8)
             board.pop()
