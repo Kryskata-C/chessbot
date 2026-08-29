@@ -183,7 +183,11 @@ class HumanMoveSelector:
         # than ~150cp on a move). During a lapse the guardrails open up.
         lapse = self._roll_lapse(best_eval)
         if lapse:
-            ceiling = max(ceiling, self._lapse_ceiling())
+            # A slip's size is bounded by what the lead can absorb: in an
+            # equal game a lapse is an inaccuracy, not a hung piece — the
+            # game must stay winnable-looking, not thrown.
+            affordable = max(90.0, cushion + 90.0)
+            ceiling = max(ceiling, min(self._lapse_ceiling(), affordable))
         else:
             ceiling = self._bound_ceiling_by_cushion(ceiling, cushion)
 
@@ -321,12 +325,12 @@ class HumanMoveSelector:
     def _sample_opp_edge() -> int:
         """How much stronger than the opponent we try to be this game.
 
-        Centred on a modest edge (a slightly better human, who usually wins
-        but not always); occasionally near parity (a genuinely close game,
-        which we may lose) or comfortably ahead.
+        Centred on a solid edge (a clearly better human who reliably wins
+        with ordinary moves); varies between comfortable and dominant, but
+        never dips to parity — the point is to win, just believably.
         """
-        edge = random.gauss(90, 55)
-        return int(max(-10, min(200, edge)))
+        edge = random.gauss(170, 50)
+        return int(max(40, min(280, edge)))
 
     def _opponent_confidence(self) -> float:
         """0 = no idea who we're playing, 1 = estimate is trustworthy."""
@@ -577,6 +581,12 @@ class HumanMoveSelector:
         never saw simply doesn't exist for it.
         """
         if board is None or len(top_moves) < 2:
+            return top_moves
+        # Technique mode: in a clearly won position (or with mate on the
+        # board) humans of every level happily give material back to
+        # convert — and refusing every tactical shot stalls won games into
+        # draws. These sacs read as "best move", not as brilliancies.
+        if top_moves[0]["eval"] >= 400:
             return top_moves
         if random.random() < self._sacrifice_vision():
             return top_moves  # this level spots it this time
