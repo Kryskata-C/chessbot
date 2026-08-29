@@ -439,9 +439,10 @@ class HumanMoveSelector:
 
     def _roll_lapse(self, best_eval: int) -> bool:
         """Occasionally a human just misses something. Never in clearly
-        forced positions (a 1600 still recaptures) and not when already
-        losing (the risk machinery is tightened there on purpose)."""
-        if best_eval < -150 or abs(best_eval) >= _MATE_CP:
+        forced positions (a 1600 still recaptures) and only when there is
+        an edge to spend — slips in level positions compound into losses,
+        while slips when comfortably better are pure human texture."""
+        if best_eval < 60 or best_eval >= _MATE_CP:
             return False
         if self.last_criticality >= 0.75:
             return False
@@ -461,7 +462,15 @@ class HumanMoveSelector:
         self, best_eval: int, piece_count: int
     ) -> tuple[float, bool]:
         """Return (temperature, coasting) for this position."""
-        temp = self._base_temperature() * self._temp_gain
+        # The controller's loosening (gain > 1) is only honored when we
+        # have a cushion to spend it from. Equal or worse positions get
+        # tight play: humans concentrate when the game is on the line,
+        # and slow 20cp-per-move leaks in balanced middlegames are what
+        # turn winnable games into losses.
+        gain = self._temp_gain
+        if self._cushion(best_eval) <= 0:
+            gain = min(gain, 1.0)
+        temp = self._base_temperature() * gain
 
         # Opening book: humans play memorized theory early -> tighter.
         if self._move_number < 6:
@@ -609,7 +618,7 @@ class HumanMoveSelector:
         # board) humans of every level happily give material back to
         # convert — and refusing every tactical shot stalls won games into
         # draws. These sacs read as "best move", not as brilliancies.
-        if top_moves[0]["eval"] >= 400:
+        if top_moves[0]["eval"] >= 350:
             return top_moves
         if random.random() < self._sacrifice_vision():
             return top_moves  # this level spots it this time
@@ -742,7 +751,7 @@ class HumanMoveSelector:
         stand better — a player with an edge doesn't drift into a
         repetition draw. In truly equal positions repetition stays a
         legitimate (human) outcome, so no penalty there."""
-        if board is None or best_eval < 100 or not self._seen_placements:
+        if board is None or best_eval < 60 or not self._seen_placements:
             return 0.0
         try:
             move = chess.Move.from_uci(uci)
