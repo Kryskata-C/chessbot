@@ -53,9 +53,12 @@ def play_game(
     board = chess.Board()
     selector.reset()
 
-    # Count sacrifice declines by watching the filter shrink its input.
-    stats = {"declined": 0, "sacs_played": [], "plies": 0}
+    # Count sacrifice declines by watching the filter shrink its input,
+    # and collect per-move (loss, best_eval) pairs for real ACPL numbers
+    # (the selector's own EMA over-weights the endgame).
+    stats = {"declined": 0, "sacs_played": [], "plies": 0, "losses": []}
     orig_filter = selector._filter_sacrifices
+    orig_record = selector._record
 
     def counting_filter(b, top):
         out = orig_filter(b, top)
@@ -63,7 +66,13 @@ def play_game(
             stats["declined"] += 1
         return out
 
+    def recording_record(top_moves, chosen, loss):
+        best = selector.last_best_eval
+        stats["losses"].append((loss, best if best is not None else 0))
+        orig_record(top_moves, chosen, loss)
+
     selector._filter_sacrifices = counting_filter
+    selector._record = recording_record
     try:
         while not board.is_game_over(claim_draw=True) and stats["plies"] < max_plies:
             if board.turn == (chess.WHITE if bot_is_white else chess.BLACK):
@@ -86,10 +95,27 @@ def play_game(
             stats["plies"] += 1
     finally:
         selector._filter_sacrifices = orig_filter
+        selector._record = orig_record
 
     stats["board"] = board
     stats["result"] = board.result(claim_draw=True)
     return stats
+
+
+def loss_profile(losses: list[tuple[int, int]]) -> str:
+    """Human-readable error profile: overall and contested-phase ACPL,
+    plus how many real mistakes (>=100cp) were made."""
+    if not losses:
+        return "no data"
+    all_l = [l for l, _ in losses]
+    contested = [l for l, best in losses if abs(best) < 300]
+    mistakes = sum(1 for l in all_l if l >= 100)
+    big = max(all_l)
+    acpl = sum(all_l) / len(all_l)
+    c_acpl = sum(contested) / len(contested) if contested else 0.0
+    return (f"ACPL {acpl:.0f} (contested {c_acpl:.0f} over "
+            f"{len(contested)} moves), mistakes>=100cp: {mistakes}, "
+            f"worst {big}cp")
 
 
 def bot_score(result: str, bot_is_white: bool) -> float:
@@ -151,12 +177,10 @@ def main() -> None:
         pgn_path = os.path.join(args.pgn_dir, f"selfplay_{int(time.time())}_{i+1}.pgn")
         save_pgn(g["board"], pgn_path, bot_is_white,
                  args.target_elo, args.opp_elo)
-        acpl = selector.get_avg_cpl()
         acc = selector.get_accuracy()
-        realized = selector.get_realized_elo()
         print(f"Result: {g['result']}  (bot {'won' if score == 1 else 'drew' if score == 0.5 else 'lost'})  "
               f"{g['plies']} plies in {time.time() - t0:.0f}s")
-        print(f"  ACPL {acpl:.0f}  accuracy {acc:.0f}%  realized ELO {realized}  "
+        print(f"  {loss_profile(g['losses'])}  best-move {acc:.0f}%  "
               f"sacs declined {g['declined']}  sacs played {g['sacs_played'] or 'none'}")
         print(f"  PGN: {pgn_path}")
 
