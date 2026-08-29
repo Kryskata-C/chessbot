@@ -82,8 +82,12 @@ def play_game(
                     break
                 move = chess.Move.from_uci(uci)
                 if selector._move_material_net(board, move) <= _SAC_NET:
+                    ev = selector.last_best_eval
+                    kind = "conversion" if ev is not None and ev >= 400 \
+                        else "SUSPICIOUS"
                     stats["sacs_played"].append(
-                        f"{board.fullmove_number}. {board.san(move)}"
+                        f"{board.fullmove_number}. {board.san(move)} "
+                        f"[{kind}, eval {ev}]"
                     )
             else:
                 opponent.set_fen_position(board.fen())
