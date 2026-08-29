@@ -177,13 +177,26 @@ class HumanMoveSelector:
         # ...then ask the human question: is there room for a slip against
         # this opponent, or does this position need a good move?
         cushion = self._cushion(best_eval)
-        ceiling = self._bound_ceiling_by_cushion(ceiling, cushion)
+        # Attention lapse: real games are decided by the occasional genuine
+        # blunder in an equal position — without a heavy tail the error
+        # stream is suspiciously uniform (six games of never losing more
+        # than ~150cp on a move). During a lapse the guardrails open up.
+        lapse = self._roll_lapse(best_eval)
+        if lapse:
+            ceiling = max(ceiling, self._lapse_ceiling())
+        else:
+            ceiling = self._bound_ceiling_by_cushion(ceiling, cushion)
 
         # Optionally surface a tempting-but-bad move (the classic human
         # blunder) so weak play isn't capped at the engine's Nth-best.
-        pool = self._augment_with_temptations(fen, top_moves, best_eval, ceiling)
+        pool = self._augment_with_temptations(
+            fen, top_moves, best_eval, ceiling, force=lapse
+        )
 
         temperature, coasting = self._compute_temperature(best_eval, piece_count)
+        if lapse:
+            temperature *= 2.5
+            print("  [lapse] attention slip — error guardrails relaxed")
 
         chosen = self._weighted_select(
             board, pool, best_eval, temperature, coasting, ceiling
@@ -382,6 +395,26 @@ class HumanMoveSelector:
             return max(12.0, min(ceiling, spendable))
         shrink = max(0.5, 1.0 + cushion / 500.0)
         return max(12.0, ceiling * shrink)
+
+    # ------------------------------------------------------------------
+    # Attention lapses: the heavy tail of the human error distribution
+    # ------------------------------------------------------------------
+
+    def _roll_lapse(self, best_eval: int) -> bool:
+        """Occasionally a human just misses something. Never in clearly
+        forced positions (a 1600 still recaptures) and not when already
+        losing (the risk machinery is tightened there on purpose)."""
+        if best_eval < -150 or abs(best_eval) >= _MATE_CP:
+            return False
+        if self.last_criticality >= 0.75:
+            return False
+        p = 0.015 + 0.09 * self._naturalness_strength()
+        return random.random() < p
+
+    def _lapse_ceiling(self) -> float:
+        """How big a mistake a lapse may produce (cp). A hung pawn or a
+        missed tactic at club level, up to a hung piece for weak levels."""
+        return 140.0 + 380.0 * self._naturalness_strength()
 
     # ------------------------------------------------------------------
     # Temperature: combine ELO budget, phase, danger, and the governor
@@ -660,7 +693,8 @@ class HumanMoveSelector:
     # ------------------------------------------------------------------
 
     def _augment_with_temptations(
-        self, fen: str, top_moves: list[dict], best_eval: int, ceiling: float
+        self, fen: str, top_moves: list[dict], best_eval: int, ceiling: float,
+        force: bool = False,
     ) -> list[dict]:
         """Occasionally add a superficially tempting losing move to the pool.
 
@@ -673,11 +707,12 @@ class HumanMoveSelector:
         strength = self._naturalness_strength()
         if strength <= 0.05:
             return top_moves
-        # A tiny ceiling means the position is forcing — do not tempt.
-        if ceiling < 40 or self.last_criticality >= 0.6:
-            return top_moves
-        if random.random() > 0.15 + 0.55 * strength:
-            return top_moves
+        if not force:
+            # A tiny ceiling means the position is forcing — do not tempt.
+            if ceiling < 40 or self.last_criticality >= 0.6:
+                return top_moves
+            if random.random() > 0.15 + 0.55 * strength:
+                return top_moves
 
         board = self._safe_board(fen)
         if board is None:
