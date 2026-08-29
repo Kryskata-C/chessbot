@@ -6,3 +6,4 @@ debug_*.py
 recalibrate.py
 /tmp/
 *.log
+selfplay_pgns/
