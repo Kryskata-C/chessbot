@@ -100,7 +100,12 @@ class ChessEngine:
             result = []
             for m in raw:
                 if m.get("Mate") is not None:
-                    eval_cp = 100000 if m["Mate"] > 0 else -100000
+                    # Keep mate distance in the score: mate-in-2 must beat
+                    # mate-in-8, or a selector choosing among "equal" mates
+                    # shuffles plans forever and repetition-draws won games.
+                    n_mate = min(abs(m["Mate"]), 99)
+                    eval_cp = (100000 - 100 * n_mate if m["Mate"] > 0
+                               else -100000 + 100 * n_mate)
                 else:
                     eval_cp = m.get("Centipawn", 0)
                 result.append({"move": m["Move"], "eval": eval_cp})
