@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chess Vision · training</title>
+<style>
+  :root {
+    --bg: #0e0d0b; --panel: #171511; --panel2: #1f1c17; --line: rgba(239,233,221,.10);
+    --ink: #efe9dd; --muted: #9b9384; --acc: #b9f24a; --acc-dim: rgba(185,242,74,.16);
+    --amber: #f0b64a; --red: #ef6b5a; --blue: #6fb3ff;
+    --mono: "IBM Plex Mono", "SF Mono", Menlo, Consolas, monospace;
+    --sans: "Instrument Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+  body { padding: 20px 24px 40px; }
+  a { color: var(--acc); }
+  .mono { font-family: var(--mono); }
+  header { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 18px; }
+  header h1 { font-size: 20px; font-weight: 500; margin: 0; letter-spacing: -.01em; }
+  header h1 span { color: var(--muted); font-weight: 400; }
+  select { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 13px; max-width: 420px; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .pill.live i { background: var(--acc); box-shadow: 0 0 10px var(--acc); animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .35 } }
+  .score { font-family: var(--mono); font-size: 28px; margin-left: auto; }
+  .score small { color: var(--muted); font-size: 13px; margin-left: 8px; }
+  .progress { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; margin-bottom: 20px; }
+  .progress div { height: 100%; background: var(--acc); width: 0; transition: width .4s; }
+  .grid { display: grid; gap: 16px; grid-template-columns: 420px 1fr 1fr; }
+  .grid2 { display: grid; gap: 16px; grid-template-columns: 1fr 1fr; margin-top: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; min-width: 0; }
+  .panel h2 { font-size: 12px; font-weight: 500; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; font-family: var(--mono); display: flex; justify-content: space-between; }
+  .panel h2 span { color: var(--ink); letter-spacing: 0; text-transform: none; }
+  canvas { width: 100%; height: 220px; display: block; }
+  .boardwrap { display: flex; gap: 12px; align-items: stretch; }
+  svg.board { width: 100%; aspect-ratio: 1; border-radius: 6px; }
+  .evalbar { width: 14px; border-radius: 4px; background: #111; position: relative; overflow: hidden; border: 1px solid var(--line); }
+  .evalbar div { position: absolute; left: 0; right: 0; bottom: 0; background: #efe9dd; transition: height .4s; }
+  .caption { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 10px; display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .bigmove { font-family: var(--mono); font-size: 34px; line-height: 1; display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px; }
+  .bigmove .tag { font-size: 12px; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .bigmove .tag.best { color: var(--acc); border-color: var(--acc); }
+  .bigmove .tag.slip { color: var(--amber); border-color: var(--amber); }
+  .bigmove .tag.lapse { color: var(--red); border-color: var(--red); }
+  .metrics { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px 14px; }
+  .m { border-top: 1px solid var(--line); padding-top: 8px; }
+  .m b { display: block; font-family: var(--mono); font-size: 18px; font-weight: 500; }
+  .m span { font-size: 11px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+  .think { margin-top: 14px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .think b { color: var(--amber); font-weight: 500; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; }
+  th { text-align: left; color: var(--muted); font-weight: 400; padding: 6px 8px; border-bottom: 1px solid var(--line); letter-spacing: .04em; }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  tr.cur td { background: var(--acc-dim); }
+  tr.sel td { background: rgba(111,179,255,.10); }
+  td.w { color: var(--acc); } td.d { color: var(--amber); } td.l { color: var(--red); }
+  .bar { display: inline-block; height: 8px; background: var(--acc); border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+  .legend { display: flex; gap: 14px; font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 8px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 18px; height: 2px; vertical-align: middle; margin-right: 6px; }
+  .empty { color: var(--muted); font-family: var(--mono); font-size: 13px; padding: 30px 0; text-align: center; }
+  /* ---------- iteration detail modal ---------- */
+  .backdrop { position: fixed; inset: 0; background: rgba(8,7,5,.55); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+              display: flex; align-items: center; justify-content: center; z-index: 50; opacity: 0; transition: opacity .25s ease; padding: 24px; }
+  .backdrop.in { opacity: 1; }
+  .modal { width: min(1040px, 100%); max-height: 90vh; overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 18px;
+           padding: 24px 26px 26px; transform: translateY(18px) scale(.97); opacity: 0; transition: transform .35s cubic-bezier(.2,.7,.2,1), opacity .3s ease;
+           box-shadow: 0 40px 90px -30px rgba(0,0,0,.9); }
+  .backdrop.in .modal { transform: none; opacity: 1; }
+  .modal h3 { margin: 0; font-size: 22px; font-weight: 500; letter-spacing: -.01em; }
+  .modal .sub { color: var(--muted); font-family: var(--mono); font-size: 12px; margin-top: 6px; }
+  .modal .x { position: absolute; right: 18px; top: 14px; background: transparent; border: none; color: var(--muted); font-size: 22px; cursor: pointer; }
+  .modal .x:hover { color: var(--ink); }
+  .stats { display: grid; grid-template-columns: repeat(6, minmax(0,1fr)); gap: 12px; margin: 18px 0; }
+  .stat { border-top: 1px solid var(--line); padding-top: 10px; animation: rise .5s cubic-bezier(.2,.7,.2,1) both; }
+  .stat b { display: block; font-family: var(--mono); font-size: 24px; font-weight: 500; }
+  .stat span { font-size: 11px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
+  .stat.good b { color: var(--acc); } .stat.bad b { color: var(--red); } .stat.warn b { color: var(--amber); }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: none } }
+  .mgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .mgrid canvas { height: 180px; }
+  .modal .btn { display: inline-flex; align-items: center; gap: 8px; background: var(--acc); color: #0e0d0b; border: none; border-radius: 999px; padding: 9px 16px; font-weight: 600; cursor: pointer; font-size: 13px; }
+  .modal .btn:hover { filter: brightness(1.08); }
+  .modal .ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+  .sacs { font-family: var(--mono); font-size: 12px; color: var(--muted); line-height: 1.7; }
+  .sacs .s { color: var(--red); }
+  tr[data-id]:hover td { background: rgba(185,242,74,.08); }
+  @media (max-width: 1200px) { .grid { grid-template-columns: 1fr 1fr; } .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Chess Vision <span>· training</span></h1>
+  <select id="runsel"></select>
+  <label class="pill"><input type="checkbox" id="follow" checked style="margin:0"> follow newest run</label>
+  <span class="pill" id="status"><i></i><span>idle</span></span>
+  <span class="pill mono" id="params"></span>
+  <div class="score"><span id="score">–</span><small id="wdl"></small></div>
+</header>
+<div class="progress"><div id="prog"></div></div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>Live board <span id="gamecap"></span></h2>
+    <div class="boardwrap">
+      <svg class="board" id="board" viewBox="0 0 8 8"></svg>
+      <div class="evalbar"><div id="evalfill" style="height:50%"></div></div>
+    </div>
+    <div class="caption"><span id="movecap"></span><span id="evalcap"></span></div>
+  </div>
+  <div class="panel">
+    <h2>Decision <span id="decidx"></span></h2>
+    <div class="bigmove"><span id="mv">–</span><span id="mvtags"></span></div>
+    <div class="metrics" id="metrics"></div>
+    <div class="think" id="think"></div>
+  </div>
+  <div class="panel">
+    <h2>Rating, this game <span id="ratecap"></span></h2>
+    <canvas id="rating"></canvas>
+    <div class="legend"><span><i style="background:#9b9384"></i>target</span><span><i style="background:#b9f24a"></i>effective (imitated)</span><span><i style="background:#f0b64a"></i>realized (own play)</span><span><i style="background:#6fb3ff"></i>opponent estimate</span></div>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="panel">
+    <h2>Eval, this game <span id="evcap"></span></h2>
+    <canvas id="evalchart"></canvas>
+  </div>
+  <div class="panel">
+    <h2>Loss per move, whole run <span id="histcap"></span></h2>
+    <canvas id="hist"></canvas>
+    <div class="legend"><span><i style="background:#b9f24a"></i>all moves</span><span><i style="background:#6fb3ff"></i>contested positions only (|eval| &lt; 3)</span></div>
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="panel">
+    <h2>Games</h2>
+    <div style="overflow-x:auto"><table id="games"><thead><tr><th>#</th><th>bot</th><th>result</th><th>plies</th><th>best</th><th>acpl</th><th>contested</th><th>worst</th><th>≥100</th><th>opp est</th><th>sacs</th><th>governor</th></tr></thead><tbody></tbody></table></div>
+  </div>
+  <div class="panel">
+    <h2>Iterations</h2>
+    <div style="overflow-x:auto"><table id="runs"><thead><tr><th>run</th><th>vs</th><th>score</th><th>W-D-L</th><th>best</th><th>acpl</th><th>contested</th><th>worst</th><th>susp.</th></tr></thead><tbody></tbody></table></div>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const GLYPH = { K:"♔",Q:"♕",R:"♖",B:"♗",N:"♘",P:"♙", k:"♚",q:"♛",r:"♜",b:"♝",n:"♞",p:"♟" };
+const state = { runs: [], sel: null, next: 0, head: null, moves: [], games: {}, order: [], lastMove: null, done: false, timer: null };
+
+function fmt(v, d=0) { return (v === null || v === undefined) ? "–" : Number(v).toFixed(d); }
+function clampEval(e) { if (e === null || e === undefined) return null; return Math.max(-800, Math.min(800, e >= 90000 ? 800 : e <= -90000 ? -800 : e)); }
+
+/* ---------- board ---------- */
+function renderBoard(fen, uci, botWhite) {
+  const svg = $("board");
+  let out = "";
+  const flip = botWhite === false;
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const light = (r + c) % 2 === 0;
+    out += `<rect x="${c}" y="${r}" width="1" height="1" fill="${light ? "#e9e6d3" : "#7a9a5a"}"/>`;
+  }
+  const sqXY = (sq) => { let f = sq.charCodeAt(0) - 97, rk = parseInt(sq[1]) - 1; let x = flip ? 7 - f : f, y = flip ? rk : 7 - rk; return [x, y]; };
+  if (uci && uci.length >= 4) for (const s of [uci.slice(0,2), uci.slice(2,4)]) { const [x,y] = sqXY(s); out += `<rect x="${x}" y="${y}" width="1" height="1" fill="rgba(246,246,105,.75)"/>`; }
+  if (fen) {
+    const rows = fen.split(" ")[0].split("/");
+    rows.forEach((row, rr) => {
+      let c = 0;
+      for (const ch of row) {
+        if (/\d/.test(ch)) { c += parseInt(ch); continue; }
+        const x = flip ? 7 - c : c, y = flip ? 7 - rr : rr;
+        const white = ch === ch.toUpperCase();
+        out += `<text x="${x + 0.5}" y="${y + 0.5}" font-size="0.82" text-anchor="middle" dominant-baseline="central" fill="${white ? "#fdfcf7" : "#151515"}" stroke="${white ? "#333" : "none"}" stroke-width="0.02" style="font-family: 'Apple Symbols','Segoe UI Symbol','DejaVu Sans',sans-serif">${GLYPH[ch]}</text>`;
+        c++;
+      }
+    });
+  }
+  svg.innerHTML = out;
+}
+
+/* ---------- charts ---------- */
+function setupCanvas(cv) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+function lineChart(cv, series, opts) {
+  const { ctx, w, h } = setupCanvas(cv);
+  const padL = 44, padR = 10, padT = 10, padB = 22;
+  const xs = series.flatMap(s => s.pts.map(p => p[0])); const ys = series.flatMap(s => s.pts.map(p => p[1])).filter(v => v !== null);
+  if (!xs.length || !ys.length) { ctx.fillStyle = "#9b9384"; ctx.font = "12px Menlo, monospace"; ctx.fillText("waiting for moves…", padL, h / 2); return; }
+  let xmin = 0, xmax = Math.max(10, ...xs); let ymin = opts.ymin ?? Math.min(...ys), ymax = opts.ymax ?? Math.max(...ys);
+  if (opts.pad) { const p = (ymax - ymin) * 0.12 || 50; ymin -= p; ymax += p; }
+  const X = (x) => padL + (x - xmin) / (xmax - xmin) * (w - padL - padR);
+  const Y = (y) => padT + (1 - (y - ymin) / (ymax - ymin)) * (h - padT - padB);
+  ctx.strokeStyle = "rgba(239,233,221,.10)"; ctx.lineWidth = 1; ctx.font = "10px Menlo, monospace"; ctx.fillStyle = "#9b9384";
+  const ticks = opts.ticks || 4;
+  for (let i = 0; i <= ticks; i++) { const v = ymin + (ymax - ymin) * i / ticks; ctx.beginPath(); ctx.moveTo(padL, Y(v)); ctx.lineTo(w - padR, Y(v)); ctx.stroke(); ctx.fillText(opts.fmt ? opts.fmt(v) : Math.round(v), 4, Y(v) + 3); }
+  if (opts.zero !== undefined && opts.zero >= ymin && opts.zero <= ymax) { ctx.strokeStyle = "rgba(239,233,221,.35)"; ctx.beginPath(); ctx.moveTo(padL, Y(opts.zero)); ctx.lineTo(w - padR, Y(opts.zero)); ctx.stroke(); }
+  ctx.fillText(opts.xlabel || "", w - padR - 60, h - 6);
+  for (const s of series) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 2; ctx.setLineDash(s.dash || []);
+    if (s.fill) { ctx.fillStyle = s.fill; ctx.beginPath(); let started = false; for (const [x, y] of s.pts) { if (y === null) continue; if (!started) { ctx.moveTo(X(x), Y(opts.zero ?? ymin)); started = true; } ctx.lineTo(X(x), Y(y)); } if (started) { const last = s.pts[s.pts.length - 1]; ctx.lineTo(X(last[0]), Y(opts.zero ?? ymin)); ctx.closePath(); ctx.fill(); } }
+    ctx.beginPath(); let pen = false;
+    for (const [x, y] of s.pts) { if (y === null) { pen = false; continue; } if (!pen) { ctx.moveTo(X(x), Y(y)); pen = true; } else ctx.lineTo(X(x), Y(y)); }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+function histogram(cv, all, contested) {
+  const { ctx, w, h } = setupCanvas(cv);
+  const bins = [[0,0,"0"],[1,10,"1–10"],[11,25,"11–25"],[26,50,"26–50"],[51,100,"51–100"],[101,200,"101–200"],[201,1e9,"200+"]];
+  const count = (arr) => bins.map(([a,b]) => arr.filter(v => v >= a && v <= b).length / Math.max(1, arr.length));
+  const A = count(all), C = count(contested);
+  const padL = 36, padB = 24, padT = 10; const bw = (w - padL - 10) / bins.length; const max = Math.max(0.05, ...A, ...C);
+  ctx.font = "10px Menlo, monospace";
+  bins.forEach((b, i) => {
+    const x = padL + i * bw;
+    const ha = A[i] / max * (h - padT - padB), hc = C[i] / max * (h - padT - padB);
+    ctx.fillStyle = "#b9f24a"; ctx.fillRect(x + 6, h - padB - ha, bw / 2 - 8, ha);
+    ctx.fillStyle = "#6fb3ff"; ctx.fillRect(x + bw / 2, h - padB - hc, bw / 2 - 8, hc);
+    ctx.fillStyle = "#9b9384"; ctx.fillText(b[2], x + 6, h - 8);
+    if (A[i] > 0) { ctx.fillStyle = "#efe9dd"; ctx.fillText(Math.round(A[i] * 100) + "%", x + 6, h - padB - ha - 4); }
+  });
+  if (!all.length) { ctx.fillStyle = "#9b9384"; ctx.fillText("waiting for moves…", padL, h / 2); }
+}
+
+/* ---------- render ---------- */
+function currentGame() { const g = state.order.length ? state.order[state.order.length - 1] : null; return g === null ? null : state.games[g]; }
+
+function render() {
+  const head = state.head, g = currentGame();
+  const summaries = state.order.map(i => state.games[i].summary).filter(Boolean);
+  const played = summaries.length, total = head ? head.games : 0;
+  const score = summaries.reduce((a, s) => a + (s.score || 0), 0);
+  $("score").textContent = head ? `${score} / ${total}` : "–";
+  $("wdl").textContent = played ? `${summaries.filter(s=>s.score===1).length}W ${summaries.filter(s=>s.score===0.5).length}D ${summaries.filter(s=>s.score===0).length}L` : "";
+  $("prog").style.width = total ? `${played / total * 100}%` : "0";
+  const st = $("status"); st.className = "pill" + (head && !state.done ? " live" : ""); st.querySelector("span").textContent = head ? (state.done ? "finished" : `game ${played + 1} of ${total} in play`) : "idle";
+  $("params").textContent = head ? `target ${head.target} · vs SF ${head.opp} · prior ${head.prior ?? "–"} · ${head.adapt ? "adapting" : "pinned"} · depth ${head.depth}` : "";
+
+  if (g) {
+    const last = g.moves[g.moves.length - 1];
+    const botMoves = g.moves.filter(m => m.by === "bot");
+    const d = botMoves[botMoves.length - 1];
+    $("gamecap").textContent = `game ${g.index + 1} · bot ${g.botWhite ? "White" : "Black"}`;
+    renderBoard(last ? last.fen : null, last ? last.uci : null, g.botWhite);
+    const ev = last ? clampEval(last.eval_w) : 0;
+    $("evalfill").style.height = ev === null ? "50%" : `${50 + ev / 1600 * 100}%`;
+    $("movecap").textContent = last ? `ply ${last.ply} · ${last.by === "bot" ? "bot" : "SF"} played ${last.san}` : "";
+    $("evalcap").textContent = last && last.eval_w !== null && last.eval_w !== undefined ? (Math.abs(last.eval_w) >= 90000 ? (last.eval_w > 0 ? "mate for White" : "mate for Black") : `${last.eval_w > 0 ? "+" : ""}${(last.eval_w / 100).toFixed(2)}`) : "";
+    if (d) {
+      $("decidx").textContent = `bot move ${botMoves.length}`;
+      $("mv").textContent = d.san;
+      const tags = [];
+      if (d.loss === 0) tags.push(`<span class="tag best">best move</span>`);
+      else if (d.loss >= 100) tags.push(`<span class="tag lapse">−${d.loss} cp</span>`);
+      else tags.push(`<span class="tag slip">−${d.loss} cp · best ${d.best}</span>`);
+      if (d.coast) tags.push(`<span class="tag">coasting</span>`);
+      if (d.book) tags.push(`<span class="tag">book</span>`);
+      if (d.sac) tags.push(`<span class="tag ${d.sac.includes("SUSP") ? "lapse" : ""}">sacrifice</span>`);
+      $("mvtags").innerHTML = tags.join(" ");
+      const M = [["effective", d.eff], ["opponent est.", d.opp], ["realized", d.realized], ["gain", fmt(d.gain, 2)], ["temperature", fmt(d.temp)], ["cushion", d.cushion], ["criticality", fmt(d.crit, 2)], ["margin", d.margin], ["candidates", d.n_cand]];
+      $("metrics").innerHTML = M.map(([k, v]) => `<div class="m"><b>${v ?? "–"}</b><span>${k}</span></div>`).join("");
+      $("think").innerHTML = `suggested think time <b>${fmt(d.think, 1)}s</b> · edge +${d.edge ?? "–"}`;
+    }
+    const ratePts = (key) => botMoves.map((m, i) => [i + 1, m[key] ?? null]);
+    lineChart($("rating"), [
+      { pts: botMoves.map((m, i) => [i + 1, head.target]), color: "#9b9384", dash: [4, 4], width: 1 },
+      { pts: ratePts("eff"), color: "#b9f24a" },
+      { pts: ratePts("realized"), color: "#f0b64a" },
+      { pts: botMoves.map((m, i) => [i + 1, m.opp ?? null]), color: "#6fb3ff" },
+    ], { pad: true, ymin: 900, ymax: 2700, xlabel: "bot move" });
+    $("ratecap").textContent = d ? `eff ${d.eff} · realized ${d.realized ?? "–"} · opp ${d.opp ?? "–"}` : "";
+    lineChart($("evalchart"), [
+      { pts: g.moves.map(m => [m.ply, clampEval(m.eval_w)]), color: "#b9f24a", fill: "rgba(185,242,74,.12)" },
+    ], { ymin: -800, ymax: 800, zero: 0, ticks: 4, fmt: (v) => (v / 100).toFixed(0), xlabel: "ply" });
+    $("evcap").textContent = `${g.moves.length} plies`;
+  }
+
+  const all = [], contested = [];
+  for (const i of state.order) for (const m of state.games[i].moves) if (m.by === "bot" && m.loss !== undefined) { all.push(m.loss); if (Math.abs(m.best_eval ?? 0) < 300) contested.push(m.loss); }
+  histogram($("hist"), all, contested);
+  const mean = (a) => a.length ? (a.reduce((x, y) => x + y, 0) / a.length) : null;
+  $("histcap").textContent = all.length ? `${all.length} moves · best ${Math.round(all.filter(v => v === 0).length / all.length * 100)}% · acpl ${fmt(mean(all))} · contested ${fmt(mean(contested))}` : "";
+
+  const tb = $("games").querySelector("tbody");
+  tb.innerHTML = state.order.map(i => {
+    const G = state.games[i], s = G.summary;
+    const cls = s ? (s.score === 1 ? "w" : s.score === 0.5 ? "d" : "l") : "";
+    const res = s ? (s.score === 1 ? "win" : s.score === 0.5 ? "draw" : "loss") : "playing…";
+    const susp = s ? s.sacs.filter(x => x.includes("SUSP")).length : 0;
+    return `<tr class="${s ? "" : "cur"}"><td>${i + 1}</td><td>${G.botWhite ? "W" : "B"}</td><td class="${cls}">${res}</td><td>${s ? s.plies : G.moves.length}</td><td>${s ? fmt(s.best_pct) + "%" : ""}</td><td>${s ? fmt(s.acpl) : ""}</td><td>${s ? fmt(s.c_acpl) : ""}</td><td>${s ? s.worst : ""}</td><td>${s ? s.mistakes : ""}</td><td>${s ? (s.opp_est ?? "–") : ""}</td><td>${s ? `${s.sacs.length}${susp ? ` <span style="color:var(--red)">(${susp} susp.)</span>` : ""}` : ""}</td><td>${G.gov || ""}</td></tr>`;
+  }).join("") || `<tr><td colspan="12" class="empty">no games yet</td></tr>`;
+
+  const rb = $("runs").querySelector("tbody");
+  rb.innerHTML = [...state.runs].reverse().map(r => {
+    const pct = r.games ? r.score / r.games * 100 : 0;
+    return `<tr class="${r.id === state.sel ? "sel" : ""}" data-id="${r.id}" style="cursor:pointer"><td>${r.label}${r.done ? "" : " ●"}</td><td>${r.target}→${r.opp}${r.prior !== r.opp ? ` (prior ${r.prior})` : ""}</td><td><span class="bar" style="width:${pct * 0.6}px"></span>${r.score}/${r.games}</td><td>${r.wins}-${r.draws}-${r.losses}</td><td>${r.best_pct ?? "–"}%</td><td>${r.acpl ?? "–"}</td><td>${r.c_acpl ?? "–"}</td><td>${r.worst}</td><td>${r.suspicious ? `<span style="color:var(--red)">${r.suspicious}</span>` : "0"}</td></tr>`;
+  }).join("") || `<tr><td colspan="9" class="empty">no runs yet</td></tr>`;
+  rb.querySelectorAll("tr[data-id]").forEach(tr => tr.onclick = () => openIteration(tr.dataset.id));
+}
+
+/* ---------- data ---------- */
+function ingest(evs) {
+  for (const e of evs) {
+    if (e.ev === "run") { state.head = e; }
+    else if (e.ev === "game_start") { state.games[e.g] = { index: e.g, botWhite: e.bot_white, moves: [], summary: null, gov: (e.temp_mult !== undefined) ? `×${Number(e.temp_mult).toFixed(2)} / ${e.edge_shift >= 0 ? "+" : ""}${e.edge_shift}` : "" }; state.order.push(e.g); }
+    else if (e.ev === "move") { if (!state.games[e.g]) { state.games[e.g] = { index: e.g, botWhite: true, moves: [], summary: null }; state.order.push(e.g); } state.games[e.g].moves.push(e); }
+    else if (e.ev === "game") { if (state.games[e.g]) { state.games[e.g].summary = e; state.games[e.g].botWhite = e.bot_white; } }
+    else if (e.ev === "done") { state.done = true; }
+  }
+}
+function selectRun(id) {
+  state.sel = id; state.next = 0; state.head = null; state.games = {}; state.order = []; state.done = false;
+  $("runsel").value = id;
+  poll();
+}
+async function poll() {
+  if (!state.sel) return;
+  try {
+    const r = await fetch(`/api/run?id=${encodeURIComponent(state.sel)}&from=${state.next}`);
+    const j = await r.json();
+    if (j.events.length) { ingest(j.events); state.next = j.next; }
+    render();
+  } catch (e) { /* server restarting */ }
+}
+async function refreshRuns() {
+  try {
+    const r = await fetch("/api/runs"); const runs = await r.json();
+    state.runs = runs;
+    const sel = $("runsel"); const cur = sel.value;
+    sel.innerHTML = [...runs].reverse().map(x => `<option value="${x.id}">${x.label}  ·  ${x.score}/${x.games}${x.done ? "" : "  (running)"}</option>`).join("");
+    if (runs.length) {
+      const newest = runs[runs.length - 1].id;
+      if ($("follow").checked && state.sel !== newest) selectRun(newest);
+      else if (!state.sel) selectRun(newest);
+      else sel.value = state.sel || cur;
+    }
+    render();
+  } catch (e) {}
+}
+$("runsel").onchange = (e) => { $("follow").checked = false; selectRun(e.target.value); };
+
+/* ---------- iteration detail modal ---------- */
+async function openIteration(id) {
+  const summary = state.runs.find(r => r.id === id); if (!summary) return;
+  const root = $("modal-root");
+  root.innerHTML = `<div class="backdrop"><div class="modal" style="position:relative"><button class="x" title="close">×</button><h3>${summary.label}</h3><div class="sub">loading…</div></div></div>`;
+  const bd = root.firstElementChild; requestAnimationFrame(() => bd.classList.add("in"));
+  const close = () => { bd.classList.remove("in"); setTimeout(() => { root.innerHTML = ""; }, 300); document.removeEventListener("keydown", esc); };
+  const esc = (e) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", esc);
+  bd.addEventListener("click", (e) => { if (e.target === bd) close(); });
+  bd.querySelector(".x").onclick = close;
+  let evs = [];
+  try { const r = await fetch(`/api/run?id=${encodeURIComponent(id)}&from=0`); evs = (await r.json()).events; } catch (e) {}
+  const head = evs.find(e => e.ev === "run") || {};
+  const games = evs.filter(e => e.ev === "game");
+  const moves = evs.filter(e => e.ev === "move");
+  const bot = moves.filter(m => m.by === "bot" && m.loss !== undefined);
+  const n = games.length, mean = (a) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
+  const bestArr = games.map(g => g.best_pct || 0), bestMean = mean(bestArr);
+  const sd = n ? Math.sqrt(mean(bestArr.map(b => (b - bestMean) ** 2))) : 0;
+  const contested = bot.filter(m => Math.abs(m.best_eval ?? 0) < 300).map(m => m.loss);
+  const conv = [];
+  for (const g of games) { const gm = moves.filter(m => m.g === g.g); const sign = g.bot_white ? 1 : -1;
+    const won = gm.find(m => m.eval_w !== null && m.eval_w !== undefined && sign * m.eval_w >= 500 && (m.fen.split(" ")[0].replace(/[^a-zA-Z]/g, "").length <= 12));
+    if (won && g.score === 1) conv.push(g.plies - won.ply); }
+  const susp = games.flatMap(g => g.sacs.filter(x => x.includes("SUSP")));
+  const score = games.reduce((a, g) => a + g.score, 0);
+  const mins = evs.length > 1 ? ((evs[evs.length - 1].t - evs[0].t) / 60).toFixed(1) : "–";
+  const stat = (v, label, cls = "", i = 0) => `<div class="stat ${cls}" style="animation-delay:${i * 60}ms"><b>${v}</b><span>${label}</span></div>`;
+  const wdl = `${games.filter(g=>g.score===1).length}W ${games.filter(g=>g.score===0.5).length}D ${games.filter(g=>g.score===0).length}L`;
+  const m = bd.querySelector(".modal");
+  m.innerHTML = `
+    <button class="x" title="close">×</button>
+    <h3>${summary.label}</h3>
+    <div class="sub">target ${head.target} · vs SF ${head.opp} · prior ${head.prior ?? "–"} · ${head.adapt ? "adapting" : "pinned"} · depth ${head.depth} · ${n}/${head.games} games · ${mins} min${summary.done ? "" : " · running"}</div>
+    <div class="stats">
+      ${stat(`${score}/${head.games}`, wdl, score >= 0.9 * head.games ? "good" : score >= 0.75 * head.games ? "warn" : "bad", 0)}
+      ${stat(`${bestMean.toFixed(0)}%`, `best move · sd ${sd.toFixed(0)}`, bestMean >= 30 && bestMean <= 50 ? "good" : "warn", 1)}
+      ${stat(mean(games.map(g => g.acpl)).toFixed(0), "acpl", "", 2)}
+      ${stat(mean(contested).toFixed(0), "contested acpl", "", 3)}
+      ${stat(conv.length ? mean(conv).toFixed(0) : "–", `conversion plies · ${conv.length} won endings`, conv.length && mean(conv) > 30 ? "warn" : "", 4)}
+      ${stat(susp.length, "suspicious sacs", susp.length ? "bad" : "good", 5)}
+    </div>
+    <div class="mgrid">
+      <div><div class="legend" style="margin:0 0 6px"><span>loss per move · <i style="background:#b9f24a"></i>all <i style="background:#6fb3ff;margin-left:8px"></i>contested</span></div><canvas id="m-hist"></canvas></div>
+      <div><div class="legend" style="margin:0 0 6px"><span><i style="background:#b9f24a"></i>best-move % per game <i style="background:#6fb3ff;margin-left:8px"></i>opponent estimate at end (÷40)</span></div><canvas id="m-games"></canvas></div>
+    </div>
+    <div style="margin-top:16px; overflow-x:auto"><table><thead><tr><th>#</th><th>bot</th><th>result</th><th>plies</th><th>best</th><th>acpl</th><th>contested</th><th>worst</th><th>≥100</th><th>opp est</th><th>eff</th><th>sacs</th></tr></thead><tbody>
+      ${games.map(g => `<tr><td>${g.g + 1}</td><td>${g.bot_white ? "W" : "B"}</td><td class="${g.score === 1 ? "w" : g.score === 0.5 ? "d" : "l"}">${g.score === 1 ? "win" : g.score === 0.5 ? "draw" : "loss"}</td><td>${g.plies}</td><td>${fmt(g.best_pct)}%</td><td>${fmt(g.acpl)}</td><td>${fmt(g.c_acpl)}</td><td>${g.worst}</td><td>${g.mistakes}</td><td>${g.opp_est ?? "–"}</td><td>${g.eff ?? "–"}</td><td>${g.sacs.length}${g.sacs.some(x => x.includes("SUSP")) ? ` <span style="color:var(--red)">(${g.sacs.filter(x => x.includes("SUSP")).length} susp.)</span>` : ""}</td></tr>`).join("")}
+    </tbody></table></div>
+    ${susp.length ? `<div class="sacs" style="margin-top:12px">${susp.map(x => `<div class="s">${x}</div>`).join("")}</div>` : ""}
+    <div style="display:flex; gap:10px; margin-top:18px; justify-content:flex-end">
+      <button class="btn ghost" id="m-close">Close</button>
+      <button class="btn" id="m-load">Show this run on the dashboard</button>
+    </div>`;
+  m.querySelector(".x").onclick = close; m.querySelector("#m-close").onclick = close;
+  m.querySelector("#m-load").onclick = () => { $("follow").checked = false; selectRun(id); close(); };
+  histogram(m.querySelector("#m-hist"), bot.map(b => b.loss), contested);
+  lineChart(m.querySelector("#m-games"), [
+    { pts: games.map((g, i) => [i + 1, g.best_pct || 0]), color: "#b9f24a" },
+    { pts: games.map((g, i) => [i + 1, g.opp_est ? g.opp_est / 40 : null]), color: "#6fb3ff", dash: [4, 4] },
+  ], { ymin: 0, ymax: 80, ticks: 4, xlabel: "game" });
+}
+
+refreshRuns();
+setInterval(poll, 1000);
+setInterval(refreshRuns, 4000);
+window.addEventListener("resize", render);
+</script>
+</body>
+</html>
