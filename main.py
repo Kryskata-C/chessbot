@@ -6,6 +6,7 @@ runs Stockfish for the best move, and highlights it on a transparent overlay.
 
 from __future__ import annotations
 
+import os
 import sys
 import signal
 import threading
@@ -19,7 +20,7 @@ from PyQt6.QtCore import QObject, QTimer, pyqtSignal
 from PyQt6.QtGui import QShortcut, QKeySequence, QColor
 from PyQt6.QtWidgets import QApplication
 
-from capture import capture_screen
+from capture import capture_screen, list_monitors, monitor_containing
 from board_detector import detect_board
 from piece_recognizer import (
     recognize_board,
@@ -27,11 +28,15 @@ from piece_recognizer import (
     detect_player_color,
     get_templates,
     reload_templates,
+    last_move_highlight,
 )
 from engine import ChessEngine
-from elo_estimator import EloEstimator
+from elo_estimator import EloEstimator, blend_opponent_elo
 from move_selector import HumanMoveSelector
 from overlay import OverlayWindow, DebugBoardWindow
+from opponent_rating import read_opponent_rating, ocr_available
+from session import SessionGovernor
+from recorder import GameRecorder
 from menu import MenuWindow
 
 SCAN_INTERVAL_MS = 400
@@ -102,6 +107,12 @@ class ChessVision(QObject):
         super().__init__()
         self.engine = ChessEngine(depth=12, threads=2)
         self.move_selector = HumanMoveSelector(self.engine)
+        # Cross-game governor keeps the profile human over a whole session
+        self.governor = SessionGovernor(
+            os.path.join(os.path.expanduser("~"), ".chess_vision_session.json"))
+        self.move_selector.session_temp_mult = self.governor.temp_mult
+        self.move_selector.session_edge_shift = self.governor.edge_shift
+        self.recorder = GameRecorder()  # every live game -> live_games/
         self.overlay = OverlayWindow()
         self.debug_board = DebugBoardWindow()
         self.menu = MenuWindow()
@@ -129,7 +140,15 @@ class ChessVision(QObject):
         # Once the board is located, capture only its neighborhood
         # (full-screen Retina grabs are ~5x more expensive)
         self._capture_region: dict | None = None
+        # Multi-display: while no board is known, whole-display grabs
+        # rotate through every monitor until one shows a board; the
+        # overlay then follows the board onto that display.
+        self._monitors: list[dict] = []
+        self._monitor_index: int = 0
         self._monitor_bounds: dict | None = None
+        self._overlay_bounds: dict | None = None
+        self._board_misses: int = 0
+        self._latest_full_grab: bool = True
         # Per-square brightness fingerprint of the last scanned board —
         # lets us skip 200ms of template matching when nothing changed
         self._last_cells: np.ndarray | None = None
@@ -150,6 +169,13 @@ class ChessVision(QObject):
         # King-missing guard: if a king stays invisible, our own overlay
         # visuals may be covering it — clear them once to break the loop
         self._king_miss_scans: int = 0
+        # Opponent rating as printed above the board, read once per game
+        self._opp_rating_prior: int | None = None
+        self._opp_ocr_tries: int = 0
+        self._opp_ocr_next: float = 0.0
+        # Consecutive accepted scans where chess.com's last-move highlight
+        # disagrees with the tracked side to move
+        self._turn_conflicts: int = 0
         self._KING_MISS_RESET = 3
         # Tracked game state: recognition identifies which legal move was
         # played; turn/castling/en-passant then come from real game state
@@ -184,6 +210,8 @@ class ChessVision(QObject):
             )
         elif op == "geo":
             self.overlay.set_board_geometry(payload["board"], payload["wob"])
+        elif op == "screen":
+            self.overlay.set_screen_bounds(payload["bounds"])
         elif op == "suggestion":
             self.overlay.show_suggestion(**payload)
         elif op == "threats":
@@ -207,6 +235,7 @@ class ChessVision(QObject):
         self.player_color = None if self._auto_color else color
         self.target_elo = target_elo
         self.move_selector.set_target_elo(target_elo)
+        self.recorder.start(self.player_color, target_elo)
         self.current_turn = "w"  # white always moves first
         if self._auto_color:
             color_name = "Auto-detect"
@@ -230,10 +259,14 @@ class ChessVision(QObject):
         self.overlay.show()
         self.debug_board.show()
         try:
-            from capture import get_monitor_info
-            self._monitor_bounds = get_monitor_info(1)
-        except Exception:
-            self._monitor_bounds = None
+            self._monitors = list_monitors()
+        except Exception as e:
+            print(f"Monitor enumeration warning: {e}")
+            self._monitors = []
+        self._monitor_index = 0
+        self._monitor_bounds = self._monitors[0] if self._monitors else None
+        if len(self._monitors) > 1:
+            print(f"{len(self._monitors)} displays — scanning each for a board")
         self._capture_timer = QTimer(self)
         self._capture_timer.timeout.connect(self._capture_tick)
         self._capture_timer.start(SCAN_INTERVAL_MS)
@@ -247,6 +280,9 @@ class ChessVision(QObject):
         if not self.running:
             return
         region = self._capture_region
+        full_grab = region is None
+        if full_grab:
+            region = self._monitor_bounds  # whole current display
         try:
             frame = capture_screen(region=region)
         except Exception as e:
@@ -257,6 +293,7 @@ class ChessVision(QObject):
         with self._frame_lock:
             self._latest_frame = frame
             self._latest_offset = offset
+            self._latest_full_grab = full_grab
         self._frame_ready.set()
 
     def _scan_loop(self):
@@ -272,8 +309,9 @@ class ChessVision(QObject):
             with self._frame_lock:
                 frame = self._latest_frame
                 offset = self._latest_offset
+                full_grab = self._latest_full_grab
             if frame is not None:
-                self.scan(frame, offset)
+                self.scan(frame, offset, full_grab)
 
     def auto_calibrate(self, screenshot, board):
         """Try to extract templates from a starting-position board."""
@@ -408,7 +446,13 @@ class ChessVision(QObject):
 
     def _reset_game_state(self):
         """Reset all per-game state for a new game."""
+        self.move_selector.session_temp_mult = self.governor.temp_mult
+        self.move_selector.session_edge_shift = self.governor.edge_shift
         self.move_selector.reset()
+        self._turn_conflicts = 0
+        self._opp_rating_prior = None
+        self._opp_ocr_tries = 0
+        self._opp_ocr_next = 0.0
         self.elo_estimator.reset()
         self.last_fen_position = None
         self.current_turn = "w"
@@ -552,6 +596,78 @@ class ChessVision(QObject):
         except Exception:
             self.game_board = None
         print(f"Game tracking (re)synced: turn={turn}")
+        self.recorder.resync(fen_position, turn)
+
+    def _maybe_read_opponent_rating(self, screenshot, board):
+        """OCR the opponent's printed rating a few times early in the game."""
+        if (self._opp_rating_prior is not None or self._opp_ocr_tries >= 8
+                or not ocr_available()):
+            return
+        now = time.monotonic()
+        if now < self._opp_ocr_next:
+            return
+        self._opp_ocr_next = now + 4.0
+        self._opp_ocr_tries += 1
+        rating = read_opponent_rating(screenshot, board)
+        if rating is None:
+            return
+        self._opp_rating_prior = rating
+        print(f"Opponent rating read from screen: {rating}")
+        self.recorder.opponent_rating(rating)
+        self._feed_opponent_elo()
+
+    def _feed_opponent_elo(self) -> int | None:
+        """Hand the selector the opponent's strength: the printed rating as
+        a prior, pulled toward their observed centipawn loss as moves
+        accumulate (half-way after 8 of their moves). Without a prior the
+        observed estimate stands alone, as before. Returns what was fed."""
+        observed = self.elo_estimator.get_estimate()
+        moves = self.elo_estimator.get_move_count()
+        prior = self._opp_rating_prior
+        if prior is None:
+            self.move_selector.set_opponent_elo(observed, moves)
+            return observed
+        blended = blend_opponent_elo(prior, observed, moves)
+        self.move_selector.set_opponent_elo(blended, max(moves, 12))
+        return blended
+
+    def _check_turn_against_highlight(self, screenshot, board, positions,
+                                      fen_position: str):
+        """Cross-check whose move it is against chess.com's last-move
+        highlight: of the two highlighted squares, the occupied one holds
+        the piece that just moved. If the tracker disagrees for three
+        accepted scans in a row (a missed or mis-matched move), trust the
+        board and rebuild the tracked game with the corrected turn."""
+        try:
+            hl = last_move_highlight(screenshot, board)
+        except Exception:
+            return
+        if len(hl) != 2:
+            self._turn_conflicts = 0
+            return
+        occupied = [(r, c) for r, c in hl if positions[r][c] is not None]
+        if len(occupied) != 1:
+            self._turn_conflicts = 0
+            return
+        r, c = occupied[0]
+        mover = "w" if positions[r][c].isupper() else "b"
+        expected = "b" if mover == "w" else "w"
+        if expected == self.current_turn:
+            self._turn_conflicts = 0
+            return
+        self._turn_conflicts += 1
+        if self._turn_conflicts < 3:
+            return
+        self._turn_conflicts = 0
+        print(f"Turn corrected by last-move highlight: {mover} just moved, "
+              f"so it is {expected}'s turn (tracker said {self.current_turn})")
+        self.current_turn = expected
+        try:
+            self.game_board = chess.Board(
+                f"{fen_position} {expected} {infer_castling(fen_position)} - 0 1"
+            )
+        except Exception:
+            self.game_board = None
 
     def _track_position(self, fen_position: str):
         """Advance the tracked game to match a newly recognized placement."""
@@ -571,6 +687,7 @@ class ChessVision(QObject):
                 if mover != self.player_color:
                     self._new_enemy_move = mv
             print(f"Tracked: {' '.join(m.uci() for m in moves)}")
+            self.recorder.moves(b, moves, self.player_color)
             self.current_turn = "w" if b.turn == chess.WHITE else "b"
             return
 
@@ -663,6 +780,23 @@ class ChessVision(QObject):
 
         return "-"
 
+    def _follow_board_display(self, board_abs: dict):
+        """Keep capture bounds and the overlay on the display showing the board."""
+        if not self._monitors:
+            return
+        cx = board_abs["x"] + board_abs["width"] / 2
+        cy = board_abs["y"] + board_abs.get("height", board_abs["width"]) / 2
+        mb = monitor_containing(self._monitors, cx, cy)
+        if mb is None:
+            return
+        if mb != self._monitor_bounds:
+            self._monitor_bounds = mb
+            self._monitor_index = self._monitors.index(mb)
+        if mb != self._overlay_bounds:
+            self._overlay_bounds = mb
+            print(f"Board is on display {self._monitor_index + 1}: {mb}")
+            self._gui("screen", {"bounds": mb})
+
     def _update_capture_region(self, board_abs: dict):
         """Ask the capture side for just the board's neighborhood."""
         pad = int(board_abs["square_size"])
@@ -683,11 +817,13 @@ class ChessVision(QObject):
                 "left": x, "top": y, "width": w, "height": h,
             }
 
-    def scan(self, screenshot, offset: tuple[int, int] = (0, 0)):
+    def scan(self, screenshot, offset: tuple[int, int] = (0, 0),
+             full_grab: bool = False):
         """One scan cycle: detect -> recognize -> analyze -> highlight.
 
         `screenshot` may be a region crop; `offset` maps its origin back
-        to absolute screen coordinates.
+        to absolute screen coordinates. `full_grab` says the frame is a
+        whole display, so a miss counts toward trying the next display.
         """
         if not self.running:
             return
@@ -701,11 +837,26 @@ class ChessVision(QObject):
                 self._capture_region = None  # fall back to full-screen grabs
                 self._last_cells = None
                 self._gui("reset_visuals")
-                self._status("Scanning... no board found", BLUE)
+                if full_grab:
+                    self._board_misses += 1
+                    if self._board_misses >= 10 and len(self._monitors) > 1:
+                        self._board_misses = 0
+                        self._monitor_index = (
+                            (self._monitor_index + 1) % len(self._monitors)
+                        )
+                        self._monitor_bounds = self._monitors[self._monitor_index]
+                self._status(
+                    f"Scanning display {self._monitor_index + 1}"
+                    f"/{max(1, len(self._monitors))}... no board found",
+                    BLUE,
+                )
                 return
 
+            self._board_misses = 0
             # Work in absolute screen coordinates for caching/overlay
             board_abs = {**board, "x": board["x"] + ox, "y": board["y"] + oy}
+            if not self.has_templates:
+                self._follow_board_display(board_abs)  # calibration needs the overlay there
 
             # Stabilize board coordinates: if the new detection is very close
             # to the cached one, reuse the cached coords to prevent jitter
@@ -737,6 +888,8 @@ class ChessVision(QObject):
                         RED,
                     )
                 return
+
+            self._maybe_read_opponent_rating(screenshot, board)
 
             # Cheap change gate: compare per-square brightness against the
             # previous scan and skip the expensive template matching
@@ -781,6 +934,7 @@ class ChessVision(QObject):
                 self._color_guess, self._color_votes = None, 0
                 color_name = "White" if guess == "w" else "Black"
                 print(f"Auto-detected color: {color_name}")
+                self.recorder.set_color(guess)
                 self._status(f"Detected: playing as {color_name}",
                              GREEN, duration_ms=3000)
 
@@ -804,23 +958,39 @@ class ChessVision(QObject):
                 self._king_miss_scans += 1
                 if self._king_miss_scans == self._KING_MISS_RESET:
                     self._gui("reset_visuals")
+                if self._king_miss_scans in (1, 10, 50):
+                    missing = "white" if "K" not in fen_position else "black"
+                    print(f"Waiting: {missing} king not recognized "
+                          f"({self._king_miss_scans} scans) — {fen_position}")
                 self._status("Scan unclear — king not visible", ORANGE)
                 return
             self._king_miss_scans = 0
+            # Only a board with both kings counts as "the game" for the
+            # purpose of which display to watch: the dashboard's empty
+            # board or an analysis board on another screen must not pull
+            # the overlay away after a game ends.
+            self._follow_board_display(board_abs)
 
-            # New game detection: piece count jumps back near 32
-            if self._game_over and piece_count >= 30 and fen_position == STARTING_PLACEMENT:
+            # New game detection: the starting position appears after a
+            # game was in progress. The game-over screen often hides the
+            # final position, so this must not depend on having seen it.
+            was_playing = (self._game_over or (
+                self.last_fen_position is not None
+                and self.last_fen_position != STARTING_PLACEMENT))
+            if was_playing and piece_count >= 30 and fen_position == STARTING_PLACEMENT:
                 self._reset_game_state()
+                self.recorder.start(self.player_color, self.target_elo)
                 self._status("New game detected!", GREEN, duration_ms=3000)
                 print("New game detected — state reset.")
                 return
 
             # New game where our color flipped (e.g. a rematch): the start
             # position read with the old orientation looks mirrored.
-            if (self._auto_color and self._game_over and piece_count >= 30
+            if (self._auto_color and was_playing and piece_count >= 30
                     and fen_position == STARTING_PLACEMENT_FLIPPED):
                 self.player_color = "b" if self.player_color == "w" else "w"
                 self._reset_game_state()
+                self.recorder.start(self.player_color, self.target_elo)
                 color_name = "White" if self.player_color == "w" else "Black"
                 self._status(f"New game — now playing as {color_name}!",
                              GREEN, duration_ms=3000)
@@ -877,6 +1047,9 @@ class ChessVision(QObject):
                 self._init_game_state(fen_position)
             else:
                 self._track_position(fen_position)
+            self._check_turn_against_highlight(
+                screenshot, board, positions, fen_position
+            )
 
             # Feed the overlay: opponent's last move trail + threat radar
             if self._new_enemy_move is not None:
@@ -914,6 +1087,15 @@ class ChessVision(QObject):
                 self._gui("reset_visuals")
                 self.last_fen_position = fen_position
                 print(f"Game over detected: {result}")
+                self.recorder.finish(result)
+                score = None
+                if result in ("1-0", "0-1") and self.player_color:
+                    score = 1.0 if (result == "1-0") == (self.player_color == "w") else 0.0
+                elif result == "1/2-1/2":
+                    score = 0.5
+                print("  " + self.governor.record_game(
+                    self.move_selector.get_accuracy(),
+                    self.move_selector.get_contested_cpl(), score))
                 return
 
             # Estimate opponent ELO when opponent just moved
@@ -933,7 +1115,7 @@ class ChessVision(QObject):
                     # eval_after = how good it is for player (negative = bad for opponent)
                     # CPL = eval_before + eval_after (opponent's loss)
                     cpl = eval_before + eval_after
-                    self.elo_estimator.record_move(cpl)
+                    self.elo_estimator.record_move(cpl, eval_before)
                     # eval_after is from the player's POV — flip for White POV
                     white_cp = eval_after if self.player_color == "w" else -eval_after
                     self._gui("eval", {"cp": white_cp})
@@ -943,11 +1125,8 @@ class ChessVision(QObject):
             self.last_fen_position = fen_position
 
             # Feed opponent ELO estimate to move selector for adaptive play
-            elo_est = self.elo_estimator.get_estimate()
+            elo_est = self._feed_opponent_elo()
             acpl = self.elo_estimator.get_acpl()
-            self.move_selector.set_opponent_elo(
-                elo_est, self.elo_estimator.get_move_count()
-            )
 
             # Update debug board GUI
             self._gui("debug", {
@@ -1004,6 +1183,8 @@ class ChessVision(QObject):
             print(f"Suggested move: {chosen_move}")
 
             self._show_suggestion(chosen_move, fen)
+            self.recorder.suggestion(fen, self.move_selector.last_decision,
+                                     self._last_think_s)
             self._status(f"Move: {chosen_move}", GREEN, duration_ms=4000)
 
         except Exception as e:
@@ -1045,6 +1226,18 @@ class ChessVision(QObject):
         except Exception as e:
             print(f"Suggestion visual context error: {e}")
 
+        think_s = None
+        self._last_think_s = None
+        if self._visual_on("timing"):
+            try:
+                pc = self.game_board.piece_map() if self.game_board else {}
+                think_s = self.move_selector.suggest_think_time(
+                    chosen_move, len(pc) or 32
+                )
+            except Exception as e:
+                print(f"Think-time hint error: {e}")
+            self._last_think_s = think_s
+
         candidates = []
         if self._visual_on("candidates"):
             candidates = [
@@ -1060,6 +1253,7 @@ class ChessVision(QObject):
             "is_check": is_check,
             "pv": pv,
             "candidates": candidates,
+            "think_s": think_s,
         })
 
         # Eval bar from the fresh analysis (player POV -> White POV)
@@ -1070,6 +1264,7 @@ class ChessVision(QObject):
 
     def stop(self):
         self.running = False
+        self.recorder.finish(None)  # keep a partial game if we quit mid-way
         self._frame_ready.set()  # unblock the worker so it can exit
         if self._capture_timer is not None:
             self._capture_timer.stop()
@@ -1083,7 +1278,33 @@ def main():
     app = QApplication(sys.argv)
     vision = ChessVision()
 
-    vision.menu.show()  # show menu first; overlay + scanning starts after color is chosen
+    # Accounts first: the menu only appears for a signed-in, licensed user
+    # (or an admin). A remembered session signs in silently.
+    from account_ui import LoginWindow
+    accounts, config_error = None, None
+    try:
+        from auth import Accounts
+        accounts = Accounts()
+    except Exception as e:
+        config_error = f"Account server not configured: {e}"
+    login = LoginWindow(accounts, config_error)
+
+    def on_signed_in(profile):
+        print(f"Signed in: {profile.email} ({profile.status_text})")
+        vision.menu.set_account(profile.email, profile.status_text)
+        vision.menu.show()
+
+    def on_sign_out():
+        vision.menu.hide()
+        login.reset()
+        login.show()
+
+    login.signed_in.connect(on_signed_in)
+    vision.menu.sign_out.connect(on_sign_out)
+    if login.try_restore() and login.profile and login.profile.licensed:
+        login._continue()
+    else:
+        login.show()
 
     quit_shortcut = QShortcut(QKeySequence("Ctrl+Q"), vision.overlay)
     quit_shortcut.activated.connect(vision.stop)
