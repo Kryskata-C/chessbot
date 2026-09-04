@@ -40,6 +40,7 @@ def _load_templates() -> list[tuple[str, str, np.ndarray]]:
         Multiple entries per piece if light/dark variants exist.
     """
     templates = []
+    shaded: dict[str, np.ndarray] = {}
     if not os.path.isdir(TEMPLATE_DIR):
         return templates
     for fname in os.listdir(TEMPLATE_DIR):
@@ -55,7 +56,81 @@ def _load_templates() -> list[tuple[str, str, np.ndarray]]:
         if img is not None:
             img = cv2.resize(img, (TEMPLATE_SIZE, TEMPLATE_SIZE))
             templates.append((base, PIECE_NAMES[base], img))
+            shaded[stem] = img
+    templates.extend(_synthesize_missing_shades(shaded))
     return templates
+
+
+def _border_color(img: np.ndarray) -> np.ndarray:
+    """Median BGR of a template's 4px frame — the square colour under it."""
+    edge = np.concatenate([
+        img[:4].reshape(-1, 3), img[-4:].reshape(-1, 3),
+        img[:, :4].reshape(-1, 3), img[:, -4:].reshape(-1, 3),
+    ])
+    return np.median(edge, axis=0)
+
+
+def _repaint_background(img: np.ndarray, src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """Recolour the square behind a piece template from `src` to `dst`."""
+    f = img.astype(np.float32)
+    # 0 where the pixel is the square colour, 1 where it is piece
+    alpha = np.clip(np.linalg.norm(f - src, axis=2) / 40.0, 0, 1)[..., None]
+    repainted = alpha * f + (1 - alpha) * (f - src + dst)
+    return repainted.clip(0, 255).astype(np.uint8)
+
+
+_highlight_sets: dict[tuple[int, int, int], list[tuple[str, str, np.ndarray]]] = {}
+
+
+def _templates_for_background(bg: np.ndarray) -> list[tuple[str, str, np.ndarray]]:
+    """Every piece template repainted onto the given square colour, built
+    once per distinct colour. Used for chess.com's last-move highlight
+    squares, whose yellow tint otherwise drags scores toward the threshold
+    (the calibration never sees a piece on a highlighted square)."""
+    key = tuple(int(v) // 6 for v in bg)
+    cached = _highlight_sets.get(key)
+    if cached is not None:
+        return cached
+    made = []
+    for base, sym, tmpl in get_templates():
+        made.append((base, sym, _repaint_background(tmpl, _border_color(tmpl), bg)))
+    _highlight_sets[key] = made
+    return made
+
+
+def _synthesize_missing_shades(
+    shaded: dict[str, np.ndarray],
+) -> list[tuple[str, str, np.ndarray]]:
+    """Fill in templates calibration can't capture.
+
+    Calibration cuts templates from the starting position, where each
+    king and queen sits on exactly one square colour. On the other colour
+    the match drops to the ~0.55 threshold (a white king on e2 scored
+    0.55 vs 0.97), so the king "vanishes" and the scan stalls. Build the
+    missing variant by repainting the square colour behind the piece.
+    """
+    light = [t for n, t in shaded.items() if n.endswith("_light")]
+    dark = [t for n, t in shaded.items() if n.endswith("_dark")]
+    if not light or not dark:
+        return []
+    light_bg = np.median([_border_color(t) for t in light], axis=0)
+    dark_bg = np.median([_border_color(t) for t in dark], axis=0)
+    made = []
+    for stem, img in shaded.items():
+        for shade, other in (("_light", "_dark"), ("_dark", "_light")):
+            if not stem.endswith(shade):
+                continue
+            other_stem = stem[: -len(shade)] + other
+            if other_stem in shaded:
+                continue
+            src, dst = (light_bg, dark_bg) if shade == "_light" else (dark_bg, light_bg)
+            base = other_stem.replace("_light", "").replace("_dark", "")
+            made.append((base, PIECE_NAMES[base],
+                         _repaint_background(img, src, dst)))
+    if made:
+        print(f"Synthesized {len(made)} missing square-colour templates: "
+              + ", ".join(n for n, _, _ in made))
+    return made
 
 
 _templates: list[tuple[str, str, np.ndarray]] | None = None
@@ -75,13 +150,16 @@ def reload_templates():
     return get_templates()
 
 
-def recognize_square(square_img: np.ndarray) -> str | None:
+def recognize_square(square_img: np.ndarray,
+                     templates: list[tuple[str, str, np.ndarray]] | None = None,
+                     ) -> str | None:
     """Identify the piece on a single square image.
 
     Returns:
         FEN piece character (e.g., 'K', 'p') or None for empty.
     """
-    templates = get_templates()
+    if templates is None:
+        templates = get_templates()
     if not templates:
         return None
 
@@ -158,6 +236,41 @@ def _recover_missing_king(
     return False
 
 
+HIGHLIGHT_YELLOWNESS = 70.0
+
+
+def _ring_color(img: np.ndarray) -> np.ndarray:
+    """Median BGR of a square's outer ring — its background even with a
+    piece in the middle."""
+    h, w = img.shape[:2]
+    k = max(2, int(min(h, w) * 0.12))
+    ring = np.concatenate([
+        img[:k].reshape(-1, 3), img[-k:].reshape(-1, 3),
+        img[:, :k].reshape(-1, 3), img[:, -k:].reshape(-1, 3),
+    ]).astype(np.float32)
+    return np.median(ring, axis=0)
+
+
+def last_move_highlight(screenshot: np.ndarray, board: dict) -> list[tuple[int, int]]:
+    """Squares carrying chess.com's yellow last-move highlight.
+
+    Sampled from the outer ring of each square so a piece in the middle
+    doesn't matter. Yellowness = mean(R, G) - B: plain squares score
+    under ~45 on the default green board, highlighted ones over ~90.
+    Returns (row, col) pairs in screen orientation.
+    """
+    found = []
+    for row in range(8):
+        for col in range(8):
+            img = _square_image(screenshot, board, row, col)
+            if img is None or min(img.shape[:2]) < 8:
+                continue
+            b, g, r = _ring_color(img)
+            if (r + g) / 2 - b > HIGHLIGHT_YELLOWNESS:
+                found.append((row, col))
+    return found
+
+
 def recognize_board(screenshot: np.ndarray, board: dict) -> list[list[str | None]]:
     """Recognize all pieces on the board.
 
@@ -169,6 +282,7 @@ def recognize_board(screenshot: np.ndarray, board: dict) -> list[list[str | None
         8x8 list, rows top-to-bottom, cols left-to-right.
         Each cell is a FEN piece char or None.
     """
+    highlighted = set(last_move_highlight(screenshot, board))
     positions = []
     for row in range(8):
         rank = []
@@ -176,8 +290,11 @@ def recognize_board(screenshot: np.ndarray, board: dict) -> list[list[str | None
             square_img = _square_image(screenshot, board, row, col)
             if square_img is None:
                 rank.append(None)
-            else:
-                rank.append(recognize_square(square_img))
+                continue
+            templates = None
+            if (row, col) in highlighted:
+                templates = _templates_for_background(_ring_color(square_img))
+            rank.append(recognize_square(square_img, templates))
         positions.append(rank)
 
     # Kings can never be captured — if one wasn't recognized, try to
