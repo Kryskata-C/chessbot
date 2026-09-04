@@ -259,13 +259,20 @@ class OverlayWindow(QWidget):
         self.status_color: QColor = QColor(0, 120, 255)  # blue default
         self._status_timer: Optional[QTimer] = None
         self._native_setup_done = False
+        # Cached Cocoa handles + a watchdog that re-pins the window when a
+        # Space change (an app entering/leaving fullscreen) knocks it off
+        self._ns: Optional[dict] = None
+        self._pin_timer: Optional[QTimer] = None
 
         # Which visual effects are enabled (menu toggles override these)
         self.visuals: dict = {
             "arrow": True, "ghost": True, "reply": True, "pv": True,
             "candidates": True, "threats": True, "trail": True,
-            "evalbar": True,
+            "evalbar": True, "timing": True,
         }
+        # Suggested think time: countdown badge above the board
+        self._think_deadline: Optional[float] = None
+        self._think_timer: Optional[QTimer] = None
 
         # Board geometry in screen coords: {x, y, sq, wob}
         self._board_geo: Optional[dict] = None
@@ -333,34 +340,72 @@ class OverlayWindow(QWidget):
                 lib.objc_msgSend,
                 ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool),
             )
-
-            nsview = int(self.winId())
-            nswindow = send(nsview, lib.sel_registerName(b"window"))
-            if not nswindow:
-                return
-
-            # Window level above everything (NSScreenSaverWindowLevel = 1000)
-            send_long(nswindow, lib.sel_registerName(b"setLevel:"), 1000)
-
-            # Truly ignore all mouse events at the OS level
-            send_bool(nswindow, lib.sel_registerName(b"setIgnoresMouseEvents:"), True)
-
-            # Show on all desktops/spaces and stay visible during Expose
-            # canJoinAllSpaces (1<<0) | stationary (1<<4) | fullScreenAuxiliary (1<<8)
-            send_long(
-                nswindow,
-                lib.sel_registerName(b"setCollectionBehavior:"),
-                (1 << 0) | (1 << 4) | (1 << 8),
+            get_long = ctypes.cast(
+                lib.objc_msgSend,
+                ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p),
             )
-
-            # Hide from screen capture: mss must never see our arrows or
-            # ghost pieces, or recognition reads them as board content
-            # (NSWindowSharingNone = 0)
-            send_long(nswindow, lib.sel_registerName(b"setSharingType:"), 0)
-
-            print("macOS overlay: pinned, click-through, hidden from capture")
+            self._ns = {
+                "sel": lib.sel_registerName, "send": send,
+                "send_long": send_long, "send_bool": send_bool,
+                "get_long": get_long,
+            }
+            if self._pin_native():
+                print("macOS overlay: pinned, click-through, hidden from capture")
+                self._pin_timer = QTimer(self)
+                self._pin_timer.timeout.connect(self._pin_watchdog)
+                self._pin_timer.start(1000)
         except Exception as e:
             print(f"macOS overlay setup warning: {e}")
+
+    def _nswindow(self) -> int:
+        ns = self._ns
+        if not ns:
+            return 0
+        return ns["send"](int(self.winId()), ns["sel"](b"window")) or 0
+
+    def _pin_native(self) -> bool:
+        """(Re)apply level, click-through, all-Spaces and capture exclusion.
+
+        Idempotent, so it can run after every show, screen move or Space
+        change. Returns False when the NSWindow isn't available yet.
+        """
+        ns = self._ns
+        nswindow = self._nswindow()
+        if not ns or not nswindow:
+            return False
+        sel = ns["sel"]
+        # Window level above everything (NSScreenSaverWindowLevel = 1000)
+        ns["send_long"](nswindow, sel(b"setLevel:"), 1000)
+        # Truly ignore all mouse events at the OS level
+        ns["send_bool"](nswindow, sel(b"setIgnoresMouseEvents:"), True)
+        # Show on all desktops/spaces, including other apps' fullscreen
+        # Spaces, and stay visible during Expose:
+        # canJoinAllSpaces (1<<0) | stationary (1<<4) | fullScreenAuxiliary (1<<8)
+        ns["send_long"](
+            nswindow, sel(b"setCollectionBehavior:"),
+            (1 << 0) | (1 << 4) | (1 << 8),
+        )
+        # Hide from screen capture: mss must never see our arrows or
+        # ghost pieces, or recognition reads them as board content
+        # (NSWindowSharingNone = 0)
+        ns["send_long"](nswindow, sel(b"setSharingType:"), 0)
+        # Re-order so a changed collection behavior takes effect on the
+        # Space that is active right now
+        ns["send"](nswindow, sel(b"orderFrontRegardless"))
+        return True
+
+    def _pin_watchdog(self):
+        """Once a second: if a Space switch dropped the overlay from the
+        active Space (seen after another app leaves fullscreen), re-pin."""
+        if not self.isVisible():
+            return
+        ns = self._ns
+        nswindow = self._nswindow()
+        if not ns or not nswindow:
+            return
+        on_space = ns["get_long"](nswindow, ns["sel"](b"isOnActiveSpace"))
+        if not on_space:
+            self._pin_native()
 
     def set_status(self, text: str, color: Optional[QColor] = None, duration_ms: int = 0):
         """Show a status banner at the top of the screen.
@@ -409,12 +454,38 @@ class OverlayWindow(QWidget):
         """Enable/disable individual visual effects (from menu toggles)."""
         self.visuals.update(visuals)
 
+    def set_screen_bounds(self, bounds: dict):
+        """Move the overlay onto the display whose global bounds are given
+        (the one the board was found on). Coordinates handed to
+        set_board_geometry stay global; painting subtracts this origin."""
+        cx = bounds["left"] + bounds["width"] / 2
+        cy = bounds["top"] + bounds["height"] / 2
+        target = None
+        for screen in QApplication.screens():
+            if screen.geometry().contains(int(cx), int(cy)):
+                target = screen
+                break
+        if target is None:
+            return
+        geo = target.geometry()
+        if geo == self.geometry():
+            return
+        self._board_geo = None
+        self.setGeometry(geo)
+        print(f"Overlay moved to {target.name()} {geo.x()},{geo.y()} "
+              f"{geo.width()}x{geo.height()}")
+        self.update()
+        QTimer.singleShot(100, self._pin_native)
+
     def set_board_geometry(self, board: dict, white_on_bottom: bool):
-        """Cache detected board position so visuals can map squares to pixels."""
+        """Cache detected board position so visuals can map squares to pixels.
+
+        `board` is in global screen coordinates; stored window-local."""
         old_region = self._board_region()
+        origin = self.geometry()
         new_geo = {
-            "x": float(board["x"]),
-            "y": float(board["y"]),
+            "x": float(board["x"]) - origin.x(),
+            "y": float(board["y"]) - origin.y(),
             "sq": float(board["square_size"]),
             "wob": bool(white_on_bottom),
         }
@@ -435,6 +506,7 @@ class OverlayWindow(QWidget):
         is_check: bool = False,
         pv: list[str] | None = None,
         candidates: list[str] | None = None,
+        think_s: float | None = None,
     ):
         """Visualize a suggested move with a static arrow + ghost piece.
 
@@ -456,10 +528,59 @@ class OverlayWindow(QWidget):
             "pv": list(pv or []),
             "candidates": list(candidates or []),
         }
+        self._set_think_time(think_s)
         self._repaint_board()
+
+    def _set_think_time(self, think_s: float | None):
+        if think_s and self.visuals.get("timing", True):
+            self._think_deadline = time.monotonic() + float(think_s)
+            if self._think_timer is None:
+                self._think_timer = QTimer(self)
+                self._think_timer.timeout.connect(self._tick_think)
+            self._think_timer.start(250)
+        else:
+            self._think_deadline = None
+            if self._think_timer is not None:
+                self._think_timer.stop()
+
+    def _tick_think(self):
+        if self._think_deadline is None:
+            self._think_timer.stop()
+            return
+        if time.monotonic() > self._think_deadline + 3.0:
+            self._think_deadline = None
+            self._think_timer.stop()
+        self._repaint_board()
+
+    def _draw_think_badge(self, painter: QPainter):
+        geo = self._board_geo
+        if geo is None or self._think_deadline is None:
+            return
+        remaining = self._think_deadline - time.monotonic()
+        if remaining > 0:
+            text = f"wait {math.ceil(remaining)}s"
+            fg, bg = QColor(255, 220, 90), QColor(20, 20, 20, 215)
+        else:
+            text = "move"
+            fg, bg = QColor(20, 20, 20), QColor(120, 220, 110, 230)
+        font = QFont("Helvetica Neue", 13, QFont.Weight.Bold)
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        w = metrics.horizontalAdvance(text) + 20
+        h = metrics.height() + 8
+        sq = geo["sq"]
+        x = geo["x"] + sq * 8 - w
+        y = geo["y"] - h - 5
+        rect = QRectF(x, y, w, h)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(bg)
+        painter.drawRoundedRect(rect, h / 2, h / 2)
+        painter.setPen(fg)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
     def clear_highlights(self):
         self._suggestion = None
+        self._set_think_time(None)
         self._repaint_board()
 
     def set_threats(self, squares: list[str]):
@@ -501,6 +622,7 @@ class OverlayWindow(QWidget):
         self._threats = []
         self._trail = None
         self._has_eval = False
+        self._set_think_time(None)
         self._repaint_board()
 
     # ------------------------------------------------------------------
@@ -723,6 +845,8 @@ class OverlayWindow(QWidget):
         # Ghost of the moving piece on its destination square
         if self.visuals.get("ghost", True) and s["piece"]:
             self._draw_ghost(painter, s, b, sq)
+
+        self._draw_think_badge(painter)
 
     def _draw_ghost(self, painter: QPainter, s: dict, pos: QPointF, sq: float):
         sym = PIECE_UNICODE.get(s["piece"])
