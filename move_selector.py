@@ -52,7 +52,8 @@ import random
 import chess
 
 from engine import ChessEngine
-from elo_estimator import EloEstimator, elo_to_acpl, acpl_to_elo
+from elo_estimator import effective_loss, decided_factor, EloEstimator, elo_to_acpl, acpl_to_elo
+from openings import book_move
 
 # Piece values in centipawns, for judging captures and apparent hangs.
 _PIECE_VALUE = {
@@ -89,6 +90,7 @@ class HumanMoveSelector:
         self._opp_edge: int = self._sample_opp_edge()
         # Smoothed effective ELO: our read on the opponent firms up over
         # moves rather than lurching with every noisy estimate update.
+        self._form: int = 0
         self._eff_elo: float = float(self.DEFAULT_TARGET_ELO)
 
         # Per-game state
@@ -115,11 +117,20 @@ class HumanMoveSelector:
         self._total_moves: int = 0
         self._best_move_hits: int = 0
         self._total_cpl: float = 0.0
+        self._contested_moves: int = 0
+        self._contested_cpl: float = 0.0
 
         # Last-analysis data exposed to the overlay visualizer
         self.last_top_moves: list[dict] = []
         self.last_criticality: float = 0.0
         self.last_best_eval: int | None = None
+        self.last_cushion: int = 0
+        self.last_decision: dict = {}
+        self._piece_count: int = 32
+        # Session governor levers (see session.py); neutral by default
+        self.session_temp_mult: float = 1.0
+        self.session_edge_shift: int = 0
+        self.use_book: bool = True
 
     # ------------------------------------------------------------------
     # Public API
@@ -160,7 +171,11 @@ class HumanMoveSelector:
             self.last_best_eval = None
             return self.engine.get_best_move(fen)
 
+        self._piece_count = piece_count
         board = self._safe_board(fen)
+        booked = self._book_choice(board, top_moves, piece_count)
+        if booked is not None:
+            return booked
         top_moves = self._filter_sacrifices(board, top_moves)
         self.last_top_moves = top_moves
 
@@ -175,6 +190,22 @@ class HumanMoveSelector:
 
         self._eval_history.append(best_eval)
 
+        # Mate on the board: a human who sees it plays it. Only mating
+        # moves are considered, the shortest strongly preferred (a mate in
+        # 3 instead of 2 is human; a rook shuffle with mate available is
+        # not). Loss is recorded as 0: a slower mate is not an error.
+        if best_eval >= _MATE_CP:
+            mating = [m for m in top_moves if m["eval"] >= _MATE_CP]
+            chosen = self._weighted_select(
+                board, mating, best_eval, 60.0, False, 250.0, raw_loss=True
+            )
+            cushion = self._cushion(best_eval)
+            self.last_cushion = cushion
+            self._record(top_moves, chosen, 0)
+            self._run_controller()
+            self._log(chosen, top_moves, 0, 60.0, False, cushion)
+            return chosen
+
         # How far this position is even allowed to deviate. Forcing positions
         # (recaptures, tactics) collapse this toward zero so the obvious move
         # gets played; quiet positions leave room for human imprecision.
@@ -182,6 +213,7 @@ class HumanMoveSelector:
         # ...then ask the human question: is there room for a slip against
         # this opponent, or does this position need a good move?
         cushion = self._cushion(best_eval)
+        self.last_cushion = cushion
         # Attention lapse: real games are decided by the occasional genuine
         # blunder in an equal position — without a heavy tail the error
         # stream is suspiciously uniform (six games of never losing more
@@ -229,6 +261,8 @@ class HumanMoveSelector:
             (m["eval"] for m in pool if m["move"] == chosen), best_eval
         )
         loss = max(0, best_eval - chosen_eval)
+        if best_eval >= _MATE_CP and chosen_eval >= _MATE_CP:
+            loss = 0  # a slower mate is still a mate, not an error
         self._record(top_moves, chosen, loss)
         self._run_controller()
         self._log(chosen, top_moves, loss, temperature, coasting, cushion)
@@ -247,6 +281,75 @@ class HumanMoveSelector:
                 pass
         return chosen
 
+    def _book_choice(self, board: chess.Board | None, top_moves: list[dict],
+                     piece_count: int) -> str | None:
+        """Play the repertoire while the position is in it. The engine's
+        candidates are still fetched so the move is scored and logged like
+        any other; a book move the engine really dislikes (a line the
+        opponent has refuted) is skipped and play falls through."""
+        if not self.use_book or board is None:
+            return None
+        uci = book_move(board)
+        if uci is None:
+            return None
+        try:
+            if chess.Move.from_uci(uci) not in board.legal_moves:
+                return None
+        except ValueError:
+            return None
+        best_eval = top_moves[0]["eval"]
+        chosen_eval = next((m["eval"] for m in top_moves if m["move"] == uci), None)
+        if chosen_eval is None:
+            board.push(chess.Move.from_uci(uci))
+            chosen_eval = -self.engine.get_evaluation(board.fen(), depth=10)
+            board.pop()
+        loss = max(0, best_eval - chosen_eval)
+        if loss > 80:
+            return None
+        self.last_top_moves = top_moves
+        self.last_best_eval = best_eval
+        self.last_criticality = self._compute_criticality(top_moves)
+        self._update_effective_elo()
+        self._eval_history.append(best_eval)
+        cushion = self._cushion(best_eval)
+        self.last_cushion = cushion
+        self._record(top_moves, uci, loss)
+        self._log(uci, top_moves, loss, self._base_temperature(), False, cushion)
+        self.last_decision["book"] = True
+        return uci
+
+    def suggest_think_time(self, chosen: str, piece_count: int) -> float:
+        """How long a human would plausibly think before playing `chosen`.
+
+        Timing is a tell chess.com looks at as much as move quality:
+        recaptures and only-moves come instantly, real decisions take a
+        while, worse positions get more thought, slips happen when moving
+        fast. Seconds, log-normally jittered, for the overlay countdown.
+        """
+        top = self.last_top_moves
+        best = top[0]["eval"] if top else 0
+        chosen_eval = next((m["eval"] for m in top if m["move"] == chosen), best)
+        loss = max(0, best - chosen_eval)
+        crit = self.last_criticality
+        if self._move_number < 8:
+            base = 3.0                      # opening: familiar territory
+        elif crit >= 0.6:
+            base = 2.5                      # one obvious move
+        elif loss >= 60:
+            base = 4.0                      # slips happen when moving fast
+        elif crit < 0.15:
+            base = 11.0                     # several playable moves: a real decision
+        else:
+            base = 7.0
+        if self.last_cushion < 0:
+            base *= 1.4                     # under pressure, people think longer
+        if piece_count <= 10:
+            base *= 0.7                     # simple endgames go quicker
+        if len(top) >= 2 and abs(top[0]["eval"] - top[1]["eval"]) < 15 and crit < 0.3:
+            base *= 1.2                     # two near-equal options
+        seconds = base * math.exp(random.gauss(0.0, 0.35))
+        return max(1.0, min(30.0, seconds))
+
     def get_accuracy(self) -> float | None:
         if self._total_moves == 0:
             return None
@@ -257,6 +360,12 @@ class HumanMoveSelector:
             return None
         return self._total_cpl / self._total_moves
 
+    def get_contested_cpl(self) -> float | None:
+        """Average loss on moves played from live positions (|eval| < 3)."""
+        if self._contested_moves == 0:
+            return None
+        return self._contested_cpl / self._contested_moves
+
     def reset(self) -> None:
         """Clear per-game state and sample a fresh game script."""
         self._eval_history.clear()
@@ -266,13 +375,20 @@ class HumanMoveSelector:
         self._seen_placements.clear()
         self._opponent_elo = None
         self._opponent_moves = 0
-        self._opp_edge = self._sample_opp_edge()
-        self._eff_elo = float(self._target_elo)
+        self._opp_edge = int(max(-10, min(400, self._sample_opp_edge()
+                                          + self.session_edge_shift)))
+        # Form: a real player is a different strength every day. The
+        # rating imitated this game is the target shifted by a sampled
+        # offset, before any adaptation to the opponent.
+        self._form = int(max(-180, min(180, random.gauss(0, 80))))
+        self._eff_elo = float(self._target_elo + self._form)
         self._temp_gain = 1.0
         self._realized.reset()
         self._total_moves = 0
         self._best_move_hits = 0
         self._total_cpl = 0.0
+        self._contested_moves = 0
+        self._contested_cpl = 0.0
         self.last_top_moves = []
         self.last_criticality = 0.0
         self.last_best_eval = None
@@ -294,12 +410,15 @@ class HumanMoveSelector:
         """
         acpl = elo_to_acpl(self._effective_elo())
         weakness = self._naturalness_strength()
-        return max(6.0, min(800.0, acpl * (1.9 + 3.4 * weakness)))
+        return max(6.0, min(800.0, acpl * (1.9 + 3.4 * weakness))) * self.session_temp_mult
 
     def _num_candidates(self) -> int:
         """Weak players consider more (and worse) moves than strong ones."""
-        n = round(5 + (1900 - self._effective_elo()) / 110)
-        return int(max(4, min(self.NUM_CANDIDATES_MAX, n)))
+        # A floor of 8: with only the engine's top 5 in a quiet position
+        # every candidate is within ~20cp of best, so the temperature has
+        # nothing to spend and the controller saturates trying.
+        n = round(8 + (1900 - self._effective_elo()) / 110)
+        return int(max(6, min(self.NUM_CANDIDATES_MAX, n)))
 
     def _loss_ceiling(self, criticality: float) -> float:
         """The largest single-move error (cp) this position may deviate by.
@@ -340,16 +459,18 @@ class HumanMoveSelector:
     # Opponent adaptation: effective ELO and per-move risk appetite
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _sample_opp_edge() -> int:
+    def _sample_opp_edge(self) -> int:
         """How much stronger than the opponent we try to be this game.
 
         Centred on a solid edge (a clearly better human who reliably wins
         with ordinary moves); varies between comfortable and dominant, but
         never dips to parity — the point is to win, just believably.
         """
-        edge = random.gauss(250, 60)
-        return int(max(150, min(380, edge)))
+        # Scaled to the level: a 1200 who beats 1200s is a 1330, not a
+        # 1500. Roughly a tenth of the rating, with game-to-game spread.
+        mean = 0.11 * self._target_elo + 20
+        edge = random.gauss(mean, 55)
+        return int(max(30, min(300, edge)))
 
     def _opponent_confidence(self) -> float:
         """0 = no idea who we're playing, 1 = estimate is trustworthy."""
@@ -362,13 +483,14 @@ class HumanMoveSelector:
         pulled toward (opponent + edge) as the opponent's strength becomes
         clear. Bounded to +-400 around the target so the user's choice still
         means something (a '1600' bot never turns into a 2400 or a 900)."""
+        base = float(self._target_elo + self._form)
         conf = self._opponent_confidence()
         if conf <= 0.0:
-            return float(self._target_elo)
+            return base
         wanted = self._opponent_elo + self._opp_edge
-        wanted = max(self._target_elo - 400, min(self._target_elo + 400, wanted))
+        wanted = max(base - 400, min(base + 400, wanted))
         # Keep a little pull toward the menu target even at full confidence.
-        return self._target_elo + conf * 0.85 * (wanted - self._target_elo)
+        return base + conf * 0.85 * (wanted - base)
 
     def _update_effective_elo(self) -> None:
         """Drift the effective ELO toward the wanted value (once per move)."""
@@ -428,7 +550,11 @@ class HumanMoveSelector:
         """
         acpl = elo_to_acpl(self._effective_elo())
         if cushion >= 0:
-            spendable = acpl * 1.8 + 0.6 * cushion
+            # Slice of the lead that may go in one move: a thin edge is
+            # nursed (a good player does not let +1 slip to 0.00 in one
+            # careless move), a big one can be spent freely.
+            share = 0.35 + 0.25 * min(1.0, cushion / 400.0)
+            spendable = acpl * 1.6 + share * cushion
             return max(12.0, min(ceiling, spendable))
         shrink = max(0.5, 1.0 + cushion / 500.0)
         return max(12.0, ceiling * shrink)
@@ -468,8 +594,23 @@ class HumanMoveSelector:
         # and slow 20cp-per-move leaks in balanced middlegames are what
         # turn winnable games into losses.
         gain = self._temp_gain
-        if self._cushion(best_eval) <= 0:
+        cushion_now = self._cushion(best_eval)
+        if cushion_now <= 0:
             gain = min(gain, 1.0)
+        elif gain > 1.0:
+            # A small edge is guarded, not spent: honour the loosening in
+            # proportion to how much lead there is to spend it from (a
+            # +1.3 game blown by three 50cp moves is how draws happen).
+            gain = 1.0 + (gain - 1.0) * min(1.0, cushion_now / 400.0)
+        if piece_count <= 12:
+            # Won endgames are technique: nobody relaxes into random rook
+            # moves with a pawn to push. Loosening is capped here.
+            gain = min(gain, 1.5)
+        elif best_eval >= _WINNING_CP:
+            # Coasting already relaxes below; letting the controller pile
+            # its full gain on top produced 250cp leaks every move and a
+            # +7.5 game traded down into a dead draw.
+            gain = min(gain, 2.0)
         temp = self._base_temperature() * gain
 
         # Opening book: humans play memorized theory early -> tighter.
@@ -618,7 +759,7 @@ class HumanMoveSelector:
         # board) humans of every level happily give material back to
         # convert — and refusing every tactical shot stalls won games into
         # draws. These sacs read as "best move", not as brilliancies.
-        if top_moves[0]["eval"] >= 350:
+        if top_moves[0]["eval"] >= 450:
             return top_moves
         if random.random() < self._sacrifice_vision():
             return top_moves  # this level spots it this time
@@ -716,6 +857,53 @@ class HumanMoveSelector:
                 bonus -= 0.7
 
         return bonus
+
+    def _progress_prior(self, board: chess.Board | None, uci: str,
+                        best_eval: int) -> float:
+        """In a won endgame a human follows a plan: push the passed pawn,
+        promote, bring the king up. Rewards those and penalizes purposeless
+        major-piece moves. Unscaled by naturalness — this is technique,
+        not talent. Zero outside decided endgames."""
+        if board is None or self._piece_count > 12 or best_eval < 300:
+            return 0.0
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            return 0.0
+        mover = board.piece_at(move.from_square)
+        if mover is None or move not in board.legal_moves:
+            return 0.0
+        bonus = 0.0
+        if move.promotion is not None:
+            bonus += 1.5 if move.promotion == chess.QUEEN else 0.3
+        elif mover.piece_type == chess.PAWN and self._is_passed_pawn(board, move.from_square):
+            bonus += 0.9
+        elif mover.piece_type == chess.KING:
+            # King marching toward the action (the enemy king) is progress.
+            enemy_king = board.king(not board.turn)
+            if enemy_king is not None:
+                before = chess.square_distance(move.from_square, enemy_king)
+                after = chess.square_distance(move.to_square, enemy_king)
+                bonus += 0.4 if after < before else -0.2
+        elif mover.piece_type in (chess.ROOK, chess.QUEEN):
+            if not board.is_capture(move) and not board.gives_check(move):
+                bonus -= 0.6  # shuffling the rook is what killed a live game
+        return bonus
+
+    @staticmethod
+    def _is_passed_pawn(board: chess.Board, square: chess.Square) -> bool:
+        pawn = board.piece_at(square)
+        if pawn is None or pawn.piece_type != chess.PAWN:
+            return False
+        file, rank = chess.square_file(square), chess.square_rank(square)
+        ahead = range(rank + 1, 8) if pawn.color == chess.WHITE else range(rank - 1, -1, -1)
+        for r in ahead:
+            for f in (file - 1, file, file + 1):
+                if 0 <= f <= 7:
+                    p = board.piece_at(chess.square(f, r))
+                    if p is not None and p.piece_type == chess.PAWN and p.color != pawn.color:
+                        return False
+        return True
 
     def _coherence_penalty(self, uci: str) -> float:
         """Penalize move-to-move incoherence — the un-human tells that a
@@ -840,13 +1028,28 @@ class HumanMoveSelector:
         temperature: float,
         coasting: bool,
         ceiling: float,
+        raw_loss: bool = False,
     ) -> str:
         strength = self._naturalness_strength()
+        endgame = self._piece_count <= 12
+
+        # Losses are measured by how much they matter: in a decided
+        # position (say +9) a 200cp "slip" changes nothing, and insisting
+        # on the engine's fastest win there is the least human thing the
+        # bot can do. The coast floor below still guards the result.
+        def cost(m: dict) -> float:
+            loss = best_eval - m["eval"]
+            if raw_loss:
+                return float(loss)
+            # A decided position discounts losses, but never below half:
+            # "relaxed" must mean slower, not sloppy.
+            factor = max(decided_factor(best_eval), 0.5)
+            return loss * factor
 
         # Hard error ceiling: discard any move worse than this level would
         # plausibly play. This is what forces recaptures/tactics (tiny
         # ceiling) and forbids oversized blunders — always keep the best.
-        candidates = [m for m in pool if best_eval - m["eval"] <= ceiling]
+        candidates = [m for m in pool if cost(m) <= ceiling]
         if not candidates:
             candidates = [pool[0]]
 
@@ -860,9 +1063,10 @@ class HumanMoveSelector:
 
         moves, weights = [], []
         for m in candidates:
-            loss = best_eval - m["eval"]
+            loss = cost(m)
             exponent = -loss / max(temperature, 1.0)
             exponent += strength * self._human_prior(board, m["move"])
+            exponent += self._progress_prior(board, m["move"], best_eval)
             exponent += self._coherence_penalty(m["move"])
             exponent += self._repetition_penalty(board, m["move"], best_eval)
             exponent = max(-30.0, min(30.0, exponent))
@@ -905,7 +1109,10 @@ class HumanMoveSelector:
         self._move_number += 1
         self._total_moves += 1
         self._total_cpl += loss
-        self._realized.record_move(loss)
+        if self.last_best_eval is not None and abs(self.last_best_eval) < 300:
+            self._contested_moves += 1
+            self._contested_cpl += loss
+        self._realized.record_move(loss, self.last_best_eval)
         try:
             self._recent_moves.append(chess.Move.from_uci(chosen))
             self._recent_moves = self._recent_moves[-4:]
@@ -921,6 +1128,20 @@ class HumanMoveSelector:
     def _log(self, chosen, top_moves, loss, temperature, coasting,
              cushion) -> None:
         tag = "*" if chosen == top_moves[0]["move"] else " "
+        chosen_eval = next(
+            (m["eval"] for m in top_moves if m["move"] == chosen),
+            top_moves[0]["eval"] - loss,
+        )
+        self.last_decision = {
+            "move": chosen, "best": top_moves[0]["move"], "loss": int(loss),
+            "best_eval": int(top_moves[0]["eval"]), "chosen_eval": int(chosen_eval),
+            "temp": round(float(temperature), 1), "target": self._target_elo,
+            "eff": self._effective_elo(), "opp": self._opponent_elo,
+            "edge": self._opp_edge, "form": self._form, "realized": self.get_realized_elo(),
+            "gain": round(self._temp_gain, 2), "margin": self._target_margin,
+            "cushion": int(cushion), "crit": round(self.last_criticality, 2),
+            "coast": bool(coasting), "n_cand": len(top_moves),
+        }
         realized = self.get_realized_elo()
         realized_s = f"{realized}" if realized is not None else "--"
         opp_s = f"{self._opponent_elo}" if self._opponent_elo is not None else "--"
