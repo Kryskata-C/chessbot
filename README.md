@@ -337,8 +337,16 @@ chessbot/
 ├── capture.py           # mss screen/region capture
 ├── overlay.py           # PyQt6 overlay + debug board window
 ├── menu.py              # Animated startup menu (color, ELO, visuals)
+├── auth.py / account_ui.py / config.py  # Supabase accounts: login, licence gate, admin panel
+├── recorder.py          # Records every live game to live_games/ (JSONL + PGN)
+├── openings.py          # Human opening repertoire (per-user favourites)
+├── session.py           # Cross-game governor: keeps best-move % / ACPL human over a session
+├── opponent_rating.py   # OCR of the opponent's printed rating (prior for adaptation)
 ├── calibrate.py         # Template extraction
 ├── recalibrate.py       # Quick non-interactive recalibration
+├── selfplay.py          # Tuning harness: bot vs rating-capped Stockfish, streams JSON events
+├── dashboard.py         # Live training dashboard (serves dashboard/index.html)
+├── runstats.py          # One-line summary per self-play run
 └── templates/           # Generated piece templates
 ```
 
@@ -352,9 +360,51 @@ Knobs: `SCAN_INTERVAL_MS` in `main.py` (default 400), `ChessEngine(depth=12, thr
 
 ---
 
+## 🔐 Accounts (login, subscriptions, admin)
+
+The app opens with a sign-in window; the menu only appears for a licensed user or an admin.
+Accounts live in a Supabase project (free tier): email + password auth plus a `profiles` table
+(`role` user|admin, `active`, `expires_at`) protected by row-level security, so the publishable key
+shipped in `config.py` can't read anyone else's row. Sessions are remembered in the macOS keychain.
+
+- New accounts are **inactive** until an admin enables them (admin panel button after sign-in:
+  toggle active, set expiry, +30d, change role).
+- Set `CHESS_VISION_SUPABASE_URL` (or edit `config.py`) to point at the project. The secret /
+  service-role key is never used by the app.
+- Schema + policies: see the SQL in the project notes (`profiles`, `is_admin()`, `handle_new_user` trigger).
+
+---
+
+## 🧪 Tuning harness & live dashboard
+
+Every strength change is judged by self-play, never by feel:
+
+```bash
+./venv/bin/python selfplay.py --games 10 --target-elo 1600 --opp-elo 1600 --label "what changed"
+./venv/bin/python selfplay.py --games 10 --opp-elo 1320 --opp-prior 1600   # a "1600" that plays like 1320
+./venv/bin/python selfplay.py --games 20 --session                          # with the cross-game governor
+./venv/bin/python runstats.py -v                                            # compare runs
+```
+
+By default the bot learns the opponent the way it does live (printed-rating prior + observed loss);
+`--no-adapt` pins it, `--no-book` disables the repertoire. Each run writes PGNs to `selfplay_pgns/`
+and one JSON line per move/game to `selfplay_runs/`.
+
+```bash
+./venv/bin/python dashboard.py     # then open http://localhost:8765
+```
+
+The dashboard follows the newest run: live board with the eval bar, the decision line (effective /
+realized / opponent rating, temperature, cushion, criticality, think time), rating and eval charts for
+the current game, the loss-per-move histogram for the whole run (all moves vs contested positions),
+a per-game table, and an iteration table across runs. What "good" looks like: score ≥ 9/10 vs an
+equal opponent, best-move 30–50 %, contested ACPL 22–40, zero SUSPICIOUS sacrifices.
+
+---
+
 ## 🔧 Troubleshooting
 
-**"No board found"** — board fully visible on the primary monitor, default green/beige theme, screen recording permitted.
+**"No board found"** — board fully visible on any monitor (each display is scanned in turn), default green/beige theme, screen recording permitted.
 
 **Poor recognition** — re-run `python3 calibrate.py` at the starting position with nothing covering the board. `recalibrate.py` fills in missing light/dark variants.
 
