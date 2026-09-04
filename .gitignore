@@ -7,3 +7,5 @@ recalibrate.py
 /tmp/
 *.log
 selfplay_pgns/
+live_games/
+selfplay_runs/
