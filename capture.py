@@ -28,3 +28,19 @@ def get_monitor_info(monitor_index: int = 1) -> dict:
     """Return monitor position and size."""
     with mss.mss() as sct:
         return dict(sct.monitors[monitor_index])
+
+
+def list_monitors() -> list[dict]:
+    """Every physical display as {left, top, width, height} in global
+    logical coordinates (same space Qt uses), primary first."""
+    with mss.mss() as sct:
+        return [dict(m) for m in sct.monitors[1:]]
+
+
+def monitor_containing(monitors: list[dict], x: float, y: float) -> dict | None:
+    """The monitor whose bounds contain the point (x, y), if any."""
+    for m in monitors:
+        if (m["left"] <= x < m["left"] + m["width"]
+                and m["top"] <= y < m["top"] + m["height"]):
+            return m
+    return None
