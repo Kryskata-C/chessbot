@@ -4,3 +4,4 @@ numpy
 python-chess
 stockfish
 PyQt6
+supabase>=2.0
