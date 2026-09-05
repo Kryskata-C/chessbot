@@ -37,6 +37,7 @@ from overlay import OverlayWindow, DebugBoardWindow
 from opponent_rating import read_opponent_rating, ocr_available
 from session import SessionGovernor
 from paths import SESSION_FILE, LOG_FILE, FROZEN
+from startpos import looks_like_start_position, white_on_top, start_layout
 from recorder import GameRecorder
 from menu import MenuWindow
 
@@ -169,6 +170,7 @@ class ChessVision(QObject):
         # King-missing guard: if a king stays invisible, our own overlay
         # visuals may be covering it — clear them once to break the loop
         self._king_miss_scans: int = 0
+        self._stale_scans: int = 0  # starting position seen, templates disagree
         # Opponent rating as printed above the board, read once per game
         self._opp_rating_prior: int | None = None
         self._opp_ocr_tries: int = 0
@@ -313,12 +315,31 @@ class ChessVision(QObject):
             if frame is not None:
                 self.scan(frame, offset, full_grab)
 
+    def _templates_stale(self, positions, screenshot, board) -> bool:
+        """Starting position on screen, but not according to the templates."""
+        occupied = [[p is not None for p in row] for row in positions]
+        expected = [[r in (0, 1, 6, 7) for _ in range(8)] for r in range(8)]
+        kings = sum(1 for row in positions for p in row if p in ("K", "k"))
+        if occupied == expected and kings == 2:
+            return False  # recognition agrees: healthy
+        return looks_like_start_position(screenshot, board)
+
     def auto_calibrate(self, screenshot, board):
         """Try to extract templates from a starting-position board."""
         import os, cv2
-        from calibrate import STARTING_POSITION, TEMPLATE_DIR, TEMPLATE_SIZE
+        from calibrate import TEMPLATE_DIR, TEMPLATE_SIZE
 
         os.makedirs(TEMPLATE_DIR, exist_ok=True)
+        if not looks_like_start_position(screenshot, board):
+            return 0  # cutting templates from a mid-game board would poison them
+        # The player may be Black, in which case White's pieces are on top.
+        layout = start_layout(white_on_top(screenshot, board))
+        for old in os.listdir(TEMPLATE_DIR):  # drop the previous theme's set
+            if old.endswith(".png"):
+                try:
+                    os.remove(os.path.join(TEMPLATE_DIR, old))
+                except OSError:
+                    pass
         sq = board["square_size"]
         img_h, img_w = screenshot.shape[:2]
         saved = 0
@@ -327,7 +348,7 @@ class ChessVision(QObject):
 
         for row in range(8):
             for col in range(8):
-                piece_name = STARTING_POSITION[row][col]
+                piece_name = layout[row][col]
                 if piece_name is None:
                     continue
                 is_light = (row + col) % 2 == 0
@@ -913,6 +934,22 @@ class ChessVision(QObject):
                 self._last_cells = cells
 
             positions = recognize_board(screenshot, board)
+
+            # Stale templates: the board plainly shows the starting position
+            # (32 textured squares) but recognition doesn't read it as one,
+            # so the piece set / theme changed since calibration. Re-cut.
+            if self._templates_stale(positions, screenshot, board):
+                self._stale_scans += 1
+                if self._stale_scans >= 3:
+                    self._stale_scans = 0
+                    print("Starting position on screen but templates don't "
+                          "match it — recalibrating for this piece set")
+                    self._status("Piece set changed — recalibrating...", ORANGE)
+                    self.auto_calibrate(screenshot, board)
+                    self._last_cells = None
+                    return
+            else:
+                self._stale_scans = 0
 
             # Auto color: guess from which pieces sit at the bottom of the
             # screen (the player's pieces are always at the bottom on
