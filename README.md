@@ -380,11 +380,17 @@ Knobs: `SCAN_INTERVAL_MS` in `main.py` (default 400), `ChessEngine(depth=12, thr
 
 The app opens with a sign-in window; the menu only appears for a licensed user or an admin.
 Accounts live in a Supabase project (free tier): email + password auth plus a `profiles` table
-(`role` user|admin, `active`, `expires_at`) protected by row-level security, so the publishable key
+(`role` user|friend|admin, `active`, `expires_at`) protected by row-level security, so the publishable key
 shipped in `config.py` can't read anyone else's row. Sessions are remembered in the macOS keychain.
 
 - New accounts are **inactive** until an admin enables them (admin panel button after sign-in:
-  toggle active, set expiry, +30d, change role).
+  toggle active, set expiry, +30d, change role). The website has the same panel at `admin.html`.
+- Roles: `user` needs an active subscription; `friend` has unlimited access with no admin powers
+  (shown in blue); `admin` has everything. Adding `friend` to an existing project: run
+  `supabase/friend_role.sql` in the Supabase SQL editor.
+- Training dashboard on the website: `python export_training.py` snapshots `selfplay_runs/` into
+  `../chess-vision-site/training/` and regenerates `training.html` (admin-only tab). The tab goes
+  live automatically when `dashboard.py` is running locally.
 - Set `CHESS_VISION_SUPABASE_URL` (or edit `config.py`) to point at the project. The secret /
   service-role key is never used by the app.
 - Schema + policies: see the SQL in the project notes (`profiles`, `is_admin()`, `handle_new_user` trigger).
