@@ -79,7 +79,7 @@ def export_data() -> int:
     for r in runs:
         evs = _read_events(os.path.join(RUNS, r["id"] + ".jsonl"))
         with open(os.path.join(DATA, r["id"] + ".json"), "w") as f:
-            json.dump({"events": evs, "next": len(evs), "exported": stamp}, f, separators=(",", ":"))
+            json.dump({"events": evs, "next": len(evs)}, f, separators=(",", ":"))
     with open(os.path.join(DATA, "meta.json"), "w") as f:
         json.dump({"exported": stamp, "runs": len(runs)}, f)
     return len(runs)
