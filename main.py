@@ -1350,6 +1350,9 @@ def _setup_logging():
 def main():
     _setup_logging()
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+    import native
+    native.configure_qt_env()     # Windows: Qt in physical pixels, like mss
+    native.quiet_subprocesses()   # Windows: no console flashes for Stockfish
 
     app = QApplication(sys.argv)
     vision = ChessVision()

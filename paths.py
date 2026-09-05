@@ -4,7 +4,8 @@ Running from a checkout, everything lives next to the sources as before.
 Inside the packaged .app the bundle is read-only (and signed), so anything
 the app writes -- piece templates, live game logs, the session governor
 state, the opening repertoire seed, the log file -- goes to
-~/Library/Application Support/Chess Vision/. Bundled read-only resources
+~/Library/Application Support/Chess Vision/ on macOS and
+%LOCALAPPDATA%\\Chess Vision on Windows. Bundled read-only resources
 (the Stockfish binary) are looked up through resource_path().
 """
 
@@ -28,12 +29,20 @@ def resource_path(*parts: str) -> str:
 def data_dir() -> str:
     """Writable per-user directory; created on first use."""
     if FROZEN or os.environ.get("CHESS_VISION_DATA_DIR"):
-        base = os.environ.get("CHESS_VISION_DATA_DIR") or os.path.join(
-            os.path.expanduser("~"), "Library", "Application Support", APP_NAME)
+        base = os.environ.get("CHESS_VISION_DATA_DIR") or _os_data_dir()
     else:
         base = _SRC_DIR
     os.makedirs(base, exist_ok=True)
     return base
+
+
+def _os_data_dir() -> str:
+    if sys.platform == "win32":
+        root = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+        return os.path.join(root, APP_NAME)
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", APP_NAME)
+    return os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share"), APP_NAME)
 
 
 def data_path(*parts: str) -> str:

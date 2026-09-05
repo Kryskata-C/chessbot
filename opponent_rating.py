@@ -3,8 +3,8 @@
 chess.com prints the opponent's name and rating on the line just above
 the board. That number is a far better prior for how strong they are
 than a dozen moves of centipawn loss, so it anchors the opponent
-estimate before their play says anything. Uses Apple's Vision framework
-(built into macOS, so nothing to install for the packaged app) and falls
+estimate before their play says anything. Uses the OS's own OCR (Apple
+Vision on macOS, Windows.Media.Ocr on Windows — see native.py) and falls
 back to the tesseract CLI; silently unavailable if neither works.
 """
 
@@ -20,15 +20,10 @@ import tempfile
 import cv2
 import numpy as np
 
-_TESSERACT = shutil.which("tesseract")
+import native
 
-try:  # macOS Vision framework via pyobjc
-    import Vision as _Vision
-    import Quartz as _Quartz
-    from Foundation import NSData as _NSData
-    _HAVE_VISION = True
-except Exception:  # not macOS, or pyobjc missing
-    _HAVE_VISION = False
+_TESSERACT = shutil.which("tesseract")
+_HAVE_VISION = native.ocr_available()
 
 # Vertical windows above the board (in squares) that frame the name line
 # on chess.com's layout; a couple of alternatives cover layout jitter.
@@ -44,25 +39,7 @@ def ocr_available() -> bool:
 
 
 def _ocr_vision(gray: np.ndarray) -> str:
-    ok, png = cv2.imencode(".png", gray)
-    if not ok:
-        return ""
-    data = _NSData.dataWithBytes_length_(png.tobytes(), len(png))
-    src = _Quartz.CGImageSourceCreateWithData(data, None)
-    img = _Quartz.CGImageSourceCreateImageAtIndex(src, 0, None)
-    if img is None:
-        return ""
-    req = _Vision.VNRecognizeTextRequest.alloc().init()
-    req.setRecognitionLevel_(_Vision.VNRequestTextRecognitionLevelAccurate)
-    req.setUsesLanguageCorrection_(False)
-    handler = _Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(img, None)
-    handler.performRequests_error_([req], None)
-    lines = []
-    for r in req.results() or []:
-        cands = r.topCandidates_(1)
-        if cands:
-            lines.append(str(cands[0].string()))
-    return " ".join(lines)
+    return native.ocr_text(gray) or ""
 
 
 def _ocr_tesseract(gray: np.ndarray, psm: int = 7) -> str:

@@ -10,10 +10,12 @@ def find_stockfish() -> str:
     """Find the Stockfish binary: the copy bundled with the app first, then
     whatever is on PATH or in the usual Homebrew locations."""
     import os
+    import sys
     from paths import resource_path
+    exe = "stockfish.exe" if sys.platform == "win32" else "stockfish"
     candidates = [
-        resource_path("stockfish"),
-        resource_path("bin", "stockfish"),
+        resource_path(exe),
+        resource_path("bin", exe),
         shutil.which("stockfish") or "",
         "/opt/homebrew/bin/stockfish",
         "/usr/local/bin/stockfish",
@@ -21,9 +23,9 @@ def find_stockfish() -> str:
     for p in candidates:
         if p and os.path.isfile(p) and os.access(p, os.X_OK):
             return p
-    raise FileNotFoundError(
-        "Stockfish not found. Install with: brew install stockfish"
-    )
+    hint = ("put stockfish.exe next to the app (bin\\stockfish.exe)" if sys.platform == "win32"
+            else "Install with: brew install stockfish")
+    raise FileNotFoundError(f"Stockfish not found. {hint}")
 
 
 class ChessEngine:

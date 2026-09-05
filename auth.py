@@ -1,15 +1,16 @@
 """Accounts: login / register / remembered session, the subscription gate,
 and the admin operations. Backed by Supabase auth + a `profiles` table
 (see README, "Accounts"). Roles: user (needs a subscription), friend
-(unlimited, no admin powers), admin. Sessions are remembered in the macOS keychain.
+(unlimited, no admin powers), admin. Sessions are remembered in the OS credential store
+(macOS keychain / Windows Credential Manager, see native.py).
 """
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+import native
 from config import SUPABASE_URL, SUPABASE_KEY, KEYCHAIN_SERVICE
 
 
@@ -69,26 +70,15 @@ def _parse_ts(value) -> datetime | None:
 # ---------------------------------------------------------------- keychain
 
 def _keychain_get(account: str) -> str | None:
-    r = subprocess.run(
-        ["security", "find-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE, "-w"],
-        capture_output=True, text=True,
-    )
-    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    return native.secret_get(KEYCHAIN_SERVICE, account)
 
 
 def _keychain_set(account: str, value: str) -> None:
-    subprocess.run(
-        ["security", "add-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE,
-         "-w", value, "-U"],
-        capture_output=True, text=True,
-    )
+    native.secret_set(KEYCHAIN_SERVICE, account, value)
 
 
 def _keychain_delete(account: str) -> None:
-    subprocess.run(
-        ["security", "delete-generic-password", "-a", account, "-s", KEYCHAIN_SERVICE],
-        capture_output=True, text=True,
-    )
+    native.secret_delete(KEYCHAIN_SERVICE, account)
 
 
 # ---------------------------------------------------------------- client
