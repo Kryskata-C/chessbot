@@ -1,4 +1,5 @@
-"""Draw the app icon (tournament-noir palette) and build assets/ChessVision.icns."""
+"""Draw the app icon (tournament-noir palette) and build assets/ChessVision.icns
+(macOS, needs iconutil) and assets/ChessVision.ico (Windows)."""
 import os, subprocess, sys, tempfile
 from PyQt6.QtGui import QImage, QPainter, QColor, QPainterPath, QPen, QGuiApplication
 from PyQt6.QtCore import QRectF, Qt
@@ -40,6 +41,10 @@ def draw(size: int) -> QImage:
 out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 os.makedirs(out, exist_ok=True)
 draw(1024).save(os.path.join(out, "icon-1024.png"))
+draw(256).save(os.path.join(out, "ChessVision.ico"), "ICO")
+print("wrote", os.path.join(out, "ChessVision.ico"))
+if sys.platform != "darwin":
+    sys.exit(0)
 with tempfile.TemporaryDirectory() as td:
     iconset = os.path.join(td, "ChessVision.iconset"); os.makedirs(iconset)
     for base in (16, 32, 128, 256, 512):

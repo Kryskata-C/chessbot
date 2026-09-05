@@ -1,0 +1,9 @@
+# Optional on Windows: opponent-rating OCR through Windows.Media.Ocr.
+# Without these the app runs fine; it just never reads the "(1600)" next
+# to the opponent's name (or uses tesseract if that is on PATH).
+winrt-runtime
+winrt-Windows.Foundation
+winrt-Windows.Globalization
+winrt-Windows.Graphics.Imaging
+winrt-Windows.Media.Ocr
+winrt-Windows.Storage.Streams
