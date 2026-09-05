@@ -152,7 +152,7 @@ def build_page() -> None:
     dash_classes = set(re.findall(r"\.([a-zA-Z][\w-]*)", css))
     clash = sorted((site_classes & dash_classes) - {"mono"})
     if clash:
-        css = css.replace("}#tr * {", "}" + ", ".join(f"#tr .{c}" for c in clash) + " { all: revert; }#tr * {", 1)
+        css = css.replace("}#tr * {", "}" + ", ".join(f"#tr .{c}" for c in clash) + " { all: revert; box-sizing: border-box; }#tr * {", 1)
         assert "all: revert" in css
     body = body.replace('<span class="pill mono" id="params"></span>',
                         '<span class="pill mono" id="params"></span>\n  <span class="pill mono" id="source"></span>')
