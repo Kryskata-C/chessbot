@@ -1,6 +1,7 @@
 """Accounts: login / register / remembered session, the subscription gate,
 and the admin operations. Backed by Supabase auth + a `profiles` table
-(see README, "Accounts"). Sessions are remembered in the macOS keychain.
+(see README, "Accounts"). Roles: user (needs a subscription), friend
+(unlimited, no admin powers), admin. Sessions are remembered in the macOS keychain.
 """
 
 from __future__ import annotations
@@ -29,8 +30,13 @@ class Profile:
         return self.role == "admin"
 
     @property
+    def is_friend(self) -> bool:
+        """Unlimited access, no admin powers."""
+        return self.role == "friend"
+
+    @property
     def licensed(self) -> bool:
-        if self.is_admin:
+        if self.is_admin or self.is_friend:
             return True
         if not self.active:
             return False
@@ -40,6 +46,8 @@ class Profile:
     def status_text(self) -> str:
         if self.is_admin:
             return "admin"
+        if self.is_friend:
+            return "friend account, unlimited"
         if not self.active:
             return "subscription inactive"
         if self.expires_at is None:

@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import QDialog, QLabel, QPushButton, QHBoxLayout, QWidget, 
 
 BG, PANEL, PANEL2, LINE = "#0f0e0c", "#171511", "#1f1c17", "#2a2620"
 INK, MUTED, ACC, ACC_INK, RED, AMBER = "#efe9dd", "#9b9384", "#b9f24a", "#0e0d0b", "#ef6b5a", "#f0b64a"
+BLUE = "#6fb3ff"  # friend accounts
 SERIF = "Georgia, Iowan Old Style, Times New Roman"
 SANS = "Helvetica Neue, Helvetica, Arial"
 MONO = "SF Mono, Menlo, Monaco"
