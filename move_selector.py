@@ -107,6 +107,10 @@ class HumanMoveSelector:
         # Anti-domination governor: the winning margin (cp) we try to
         # plateau at this game. Resampled each game for variety.
         self._target_margin: int = 250
+        # Conversion clock: consecutive own moves spent in a winning
+        # position. A human plateaus for a while, then converts — the bot
+        # used to coast at +3 for 50 moves and grind K+B+P endgames.
+        self._won_for: int = 0
 
         # Closed-loop controller: multiplies the base error budget so the
         # realized ELO converges to the target.
@@ -189,6 +193,10 @@ class HumanMoveSelector:
             return top_moves[0]["move"]
 
         self._eval_history.append(best_eval)
+        if best_eval >= _WINNING_CP:
+            self._won_for += 1
+        elif best_eval < 100:
+            self._won_for = 0
 
         # Mate on the board: a human who sees it plays it. Only mating
         # moves are considered, the shortest strongly preferred (a mate in
@@ -204,6 +212,24 @@ class HumanMoveSelector:
             self._record(top_moves, chosen, 0)
             self._run_controller()
             self._log(chosen, top_moves, 0, 60.0, False, cushion)
+            return chosen
+
+        # Decisive material (a piece up in a bare endgame, or +15): every
+        # human converts this, and the engine's line is the human line.
+        # Near-best play with a little slack — never Bh1-Be4 shuffles at
+        # +50 waiting for something to happen.
+        if best_eval >= 1500 or (best_eval >= 900 and piece_count <= 8):
+            pool = [m for m in top_moves if best_eval - m["eval"] <= 80] or top_moves[:1]
+            chosen = self._weighted_select(
+                board, pool, best_eval, 15.0, False, 80.0, raw_loss=True
+            )
+            cushion = self._cushion(best_eval)
+            self.last_cushion = cushion
+            chosen_eval = next((m["eval"] for m in pool if m["move"] == chosen), best_eval)
+            loss = max(0, best_eval - chosen_eval)
+            self._record(top_moves, chosen, loss)
+            self._run_controller()
+            self._log(chosen, top_moves, loss, 15.0, False, cushion)
             return chosen
 
         # How far this position is even allowed to deviate. Forcing positions
@@ -393,6 +419,21 @@ class HumanMoveSelector:
         self.last_criticality = 0.0
         self.last_best_eval = None
         self._target_margin = self._sample_target_margin()
+        self._won_for = 0
+
+    def _press(self) -> float:
+        """0 = happy to plateau, 1 = converting with intent. Grows with the
+        moves spent winning (a club player sits on +3 for a handful of
+        moves, then trades down and finishes), with a thinner board (won
+        endgames are technique) and with a crushing eval."""
+        press = min(1.0, max(0.0, (self._won_for - 6) / 12.0))
+        if self._piece_count <= 16:
+            press = max(press, 0.6)
+        if self._piece_count <= 10:
+            press = max(press, 0.85)
+        if self.last_best_eval is not None and self.last_best_eval >= 700:
+            press = max(press, 0.5)
+        return press
 
     # ------------------------------------------------------------------
     # ELO -> error budget
@@ -554,6 +595,7 @@ class HumanMoveSelector:
             # nursed (a good player does not let +1 slip to 0.00 in one
             # careless move), a big one can be spent freely.
             share = 0.35 + 0.25 * min(1.0, cushion / 400.0)
+            share *= 1.0 - 0.6 * self._press()  # converting: nurse the lead
             spendable = acpl * 1.6 + share * cushion
             return max(12.0, min(ceiling, spendable))
         shrink = max(0.5, 1.0 + cushion / 500.0)
@@ -602,6 +644,7 @@ class HumanMoveSelector:
             # proportion to how much lead there is to spend it from (a
             # +1.3 game blown by three 50cp moves is how draws happen).
             gain = 1.0 + (gain - 1.0) * min(1.0, cushion_now / 400.0)
+        press = self._press() if best_eval >= _WINNING_CP else 0.0
         if piece_count <= 12:
             # Won endgames are technique: nobody relaxes into random rook
             # moves with a pawn to push. Loosening is capped here.
@@ -611,6 +654,8 @@ class HumanMoveSelector:
             # its full gain on top produced 250cp leaks every move and a
             # +7.5 game traded down into a dead draw.
             gain = min(gain, 2.0)
+        if press > 0:
+            gain = min(gain, 2.0 - press)  # converting: no loosening on top
         temp = self._base_temperature() * gain
 
         # Opening book: humans play memorized theory early -> tighter.
@@ -639,8 +684,12 @@ class HumanMoveSelector:
         if best_eval >= _WINNING_CP and best_eval < _MATE_CP:
             over = best_eval - self._target_margin
             if over > 0:
-                coasting = True
-                temp *= 1.0 + min(over / max(self._target_margin, 80), 0.8)
+                coasting = True  # keeps the win-floor guard on
+                # Plateau early, then convert: the relaxation fades as the
+                # conversion clock runs, and the whole temperature tightens.
+                temp *= 1.0 + min(over / max(self._target_margin, 80), 0.8) * (1.0 - press)
+        if press > 0:
+            temp *= 1.0 - 0.55 * press
 
         # Avoid a suspiciously perfect streak.
         if self._consecutive_best >= 6:
@@ -860,11 +909,12 @@ class HumanMoveSelector:
 
     def _progress_prior(self, board: chess.Board | None, uci: str,
                         best_eval: int) -> float:
-        """In a won endgame a human follows a plan: push the passed pawn,
-        promote, bring the king up. Rewards those and penalizes purposeless
-        major-piece moves. Unscaled by naturalness — this is technique,
-        not talent. Zero outside decided endgames."""
-        if board is None or self._piece_count > 12 or best_eval < 300:
+        """In a won position a human follows a plan: trade pieces, push
+        the passed pawn, promote, bring the king up, keep checking. Rewards
+        those and penalizes purposeless moves of any piece. Unscaled by
+        naturalness — this is technique, not talent. Zero unless winning
+        and the board has thinned enough for plans to be concrete."""
+        if board is None or self._piece_count > 20 or best_eval < 250:
             return 0.0
         try:
             move = chess.Move.from_uci(uci)
@@ -873,21 +923,37 @@ class HumanMoveSelector:
         mover = board.piece_at(move.from_square)
         if mover is None or move not in board.legal_moves:
             return 0.0
+        scale = 1.0 if self._piece_count <= 12 else 0.6
+        crushing = 1.5 if best_eval >= 800 else 1.0
         bonus = 0.0
+        capture = board.is_capture(move)
+        check = board.gives_check(move)
         if move.promotion is not None:
             bonus += 1.5 if move.promotion == chess.QUEEN else 0.3
-        elif mover.piece_type == chess.PAWN and self._is_passed_pawn(board, move.from_square):
-            bonus += 0.9
+        elif capture:
+            victim = board.piece_at(move.to_square)
+            # Trading when ahead is the first thing every coach teaches.
+            bonus += (0.5 if victim is not None and victim.piece_type != chess.PAWN else 0.2) * scale
+        elif mover.piece_type == chess.PAWN:
+            if self._is_passed_pawn(board, move.from_square):
+                bonus += 0.9
         elif mover.piece_type == chess.KING:
             # King marching toward the action (the enemy king) is progress.
             enemy_king = board.king(not board.turn)
             if enemy_king is not None:
                 before = chess.square_distance(move.from_square, enemy_king)
                 after = chess.square_distance(move.to_square, enemy_king)
-                bonus += 0.4 if after < before else -0.2
-        elif mover.piece_type in (chess.ROOK, chess.QUEEN):
-            if not board.is_capture(move) and not board.gives_check(move):
-                bonus -= 0.6  # shuffling the rook is what killed a live game
+                bonus += 0.4 if after < before else -0.2 * crushing
+        elif not check:
+            # A quiet piece move that neither trades, checks nor advances a
+            # pawn: shuffling. Rook shuffles killed one live game, bishop
+            # shuffles at +50 another.
+            if mover.piece_type in (chess.ROOK, chess.QUEEN):
+                bonus -= 0.6 * crushing
+            else:
+                bonus -= 0.35 * scale * crushing
+        if check and not capture:
+            bonus += 0.15
         return bonus
 
     @staticmethod

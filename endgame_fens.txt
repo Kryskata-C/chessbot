@@ -1,21 +1,10 @@
-# Won positions for the side to move (bot); every one engine-verified >= +5
-# K+Q vs K+R
-8/8/3k4/8/8/8/2r5/4QK2 w - - 0 1
-# K+R+P vs K
-8/8/4k3/8/3P4/8/4K3/R7 w - - 0 1
-# K+R vs K
-8/8/4k3/8/8/8/4K3/R7 w - - 0 1
-# K+2P vs K, connected passers
-8/8/8/2k5/8/2PP4/2K5/8 w - - 0 1
-# K+R+2P vs K+R
-8/5k2/8/5P2/4P3/8/3r4/R3K3 w - - 0 1
-# Q+R vs R, mate technique
-8/8/8/3k4/8/8/1r6/Q3K2R w K - 0 1
-# Rook ending, extra pawn
-8/8/3k4/3p4/3P4/2K5/8/R4r2 w - - 0 1
-# Two bishops vs lone king
-8/8/8/3k4/8/8/8/2BBK3 w - - 0 1
-# K+Q vs K+P (knight pawn on the 7th)
-8/8/4k3/8/8/8/1p6/3QK3 w - - 0 1
-# K+B+P vs K
-8/8/4k3/8/8/2B5/4P3/4K3 w - - 0 1
+8/8/8/3Kp3/4Bk2/3P4/8/8 w - - 0 1
+8/5k2/8/8/8/8/4K3/R7 w - - 0 1
+8/8/4k3/8/8/8/2Q5/4K3 w - - 0 1
+8/pp3k2/8/8/8/8/PP3PPP/4RK2 w - - 0 1
+6k1/5pp1/8/8/8/5N2/5PPP/6K1 w - - 0 1
+r5k1/5pp1/8/8/8/8/5PPP/R1B3K1 w - - 0 1
+8/8/8/8/3k4/8/3PK3/8 w - - 0 1
+r1bq1rk1/pp3ppp/2n2n2/2bp4/8/2NBPN2/PP3PPP/R1BQ1RK1 w - - 0 1
+8/8/5k2/8/2B5/8/1PK5/8 w - - 0 1
+2r3k1/5ppp/8/8/8/8/5PPP/2RQ2K1 w - - 0 1
