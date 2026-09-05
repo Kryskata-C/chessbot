@@ -376,6 +376,38 @@ Knobs: `SCAN_INTERVAL_MS` in `main.py` (default 400), `ChessEngine(depth=12, thr
 
 ---
 
+## 🪟 Windows
+
+The bot's brain, capture (mss), recognition (OpenCV) and UI (PyQt6) are cross-platform. Everything
+OS-specific sits in `native.py` behind one set of functions, with a macOS and a Windows
+implementation:
+
+| | macOS | Windows |
+|---|---|---|
+| overlay pinned / click-through / hidden from our own grabs | Cocoa window level, `setIgnoresMouseEvents:`, `NSWindowSharingNone` | `WS_EX_TRANSPARENT`+`WS_EX_TOPMOST`, `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` |
+| screen-recording permission | TCC prompt + relaunch | none needed |
+| remembered session | keychain (`security`) | Credential Manager (`keyring`) |
+| opponent-rating OCR | Apple Vision | Windows.Media.Ocr (`requirements-win-ocr.txt`, optional), else tesseract |
+| data dir | `~/Library/Application Support/Chess Vision` | `%LOCALAPPDATA%\Chess Vision` |
+| DPI | 1x capture | Qt high-DPI scaling off, so Qt and mss share one pixel grid |
+
+Build (PyInstaller does not cross-compile, so on Windows or in CI):
+
+    pip install -r requirements.txt pyinstaller
+    pip install -r requirements-win-ocr.txt          # optional
+    powershell -ExecutionPolicy Bypass -File packaging\build_win.ps1
+    # -> dist\ChessVision\ChessVision.exe and dist\ChessVision-<ver>-windows-x64.zip
+
+CI: `.github/workflows/windows-build.yml` builds on every push to `main` (artifact on the run) and
+publishes a GitHub Release for `v*` tags or a manual "Run workflow" with publish on. The build
+downloads Stockfish's official `sse41-popcnt` Windows binary (runs on any x86-64 from ~2010);
+set `CV_STOCKFISH_BUILD=avx2` for a faster one on modern CPUs.
+
+First run on a test machine: unzip, run `ChessVision.exe`, click through SmartScreen (unsigned).
+If nothing appears, read `%LOCALAPPDATA%\Chess Vision\chess-vision.log`. Things to check that
+this Mac could not: the overlay is click-through, arrows never show up in the debug board's
+captured frame, and the board is found on a display with 125%/150% scaling.
+
 ## 🔐 Accounts (login, subscriptions, admin)
 
 The app opens with a sign-in window; the menu only appears for a licensed user or an admin.
