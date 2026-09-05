@@ -5,3 +5,5 @@ python-chess
 stockfish
 PyQt6
 supabase>=2.0
+pyobjc-framework-Vision
+pyobjc-framework-Quartz

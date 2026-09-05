@@ -3,8 +3,9 @@
 chess.com prints the opponent's name and rating on the line just above
 the board. That number is a far better prior for how strong they are
 than a dozen moves of centipawn loss, so it anchors the opponent
-estimate before their play says anything. Uses the tesseract CLI when
-it is installed; silently unavailable otherwise.
+estimate before their play says anything. Uses Apple's Vision framework
+(built into macOS, so nothing to install for the packaged app) and falls
+back to the tesseract CLI; silently unavailable if neither works.
 """
 
 from __future__ import annotations
@@ -21,6 +22,14 @@ import numpy as np
 
 _TESSERACT = shutil.which("tesseract")
 
+try:  # macOS Vision framework via pyobjc
+    import Vision as _Vision
+    import Quartz as _Quartz
+    from Foundation import NSData as _NSData
+    _HAVE_VISION = True
+except Exception:  # not macOS, or pyobjc missing
+    _HAVE_VISION = False
+
 # Vertical windows above the board (in squares) that frame the name line
 # on chess.com's layout; a couple of alternatives cover layout jitter.
 # (top, bottom, tesseract page-segmentation mode). The tight single-line
@@ -31,10 +40,32 @@ _RATING_RE = re.compile(r"\((\d{3,4})\)")
 
 
 def ocr_available() -> bool:
-    return _TESSERACT is not None
+    return _HAVE_VISION or _TESSERACT is not None
 
 
-def _ocr(gray: np.ndarray, psm: int = 7) -> str:
+def _ocr_vision(gray: np.ndarray) -> str:
+    ok, png = cv2.imencode(".png", gray)
+    if not ok:
+        return ""
+    data = _NSData.dataWithBytes_length_(png.tobytes(), len(png))
+    src = _Quartz.CGImageSourceCreateWithData(data, None)
+    img = _Quartz.CGImageSourceCreateImageAtIndex(src, 0, None)
+    if img is None:
+        return ""
+    req = _Vision.VNRecognizeTextRequest.alloc().init()
+    req.setRecognitionLevel_(_Vision.VNRequestTextRecognitionLevelAccurate)
+    req.setUsesLanguageCorrection_(False)
+    handler = _Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(img, None)
+    handler.performRequests_error_([req], None)
+    lines = []
+    for r in req.results() or []:
+        cands = r.topCandidates_(1)
+        if cands:
+            lines.append(str(cands[0].string()))
+    return " ".join(lines)
+
+
+def _ocr_tesseract(gray: np.ndarray, psm: int = 7) -> str:
     fd, path = tempfile.mkstemp(suffix=".png")
     os.close(fd)
     try:
@@ -51,9 +82,19 @@ def _ocr(gray: np.ndarray, psm: int = 7) -> str:
             pass
 
 
+def _ocr(gray: np.ndarray, psm: int = 7) -> str:
+    if _HAVE_VISION:
+        text = _ocr_vision(gray)
+        if text or _TESSERACT is None:
+            return text
+    if _TESSERACT is not None:
+        return _ocr_tesseract(gray, psm)
+    return ""
+
+
 def read_opponent_rating(screenshot: np.ndarray, board: dict) -> int | None:
     """Rating in parentheses on the opponent line above the board, or None."""
-    if _TESSERACT is None:
+    if not ocr_available():
         return None
     sq = board["square_size"]
     x0 = int(board["x"] + 0.08 * board["width"])   # skip the avatar
