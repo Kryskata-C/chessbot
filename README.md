@@ -307,7 +307,7 @@ Open chess.com at the **starting position** (default green/beige theme):
 python3 calibrate.py
 ```
 
-Extracts the 20 piece templates from *your* screen into `templates/`. (Skip it and the app auto-calibrates the first time it sees a starting position.)
+Extracts the 20 piece templates from *your* screen into `templates/`. (Skip it and the app auto-calibrates the first time it sees a starting position — from either side of the board — and recalibrates by itself when it later sees a starting position that the current templates can't read, i.e. you changed piece set or theme.)
 
 ### Play
 
@@ -321,6 +321,22 @@ Pick your color, pick the bot strength (Novice → Master, 400–2800), toggle v
 |---|---|
 | `Ctrl+Q` | Quit |
 | `Ctrl+C` | Quit (terminal) |
+
+### Ship it as an app
+
+`packaging/build_app.sh` turns the checkout into a double-clickable **Chess Vision.app** (PyInstaller) with Stockfish bundled inside — no terminal, no Homebrew, no Python on the user's Mac. The opponent-rating OCR uses macOS's own Vision framework, so nothing else needs installing.
+
+```bash
+pip install -r requirements.txt pyinstaller
+packaging/build_app.sh                                   # dist/Chess Vision.app + dist/ChessVision-<ver>-<arch>.zip
+CV_SIGN_IDENTITY="Developer ID Application: …" packaging/build_app.sh   # hardened-runtime signed, notarisable
+packaging/notarize.sh dist/ChessVision-1.0.0-arm64.zip   # after `xcrun notarytool store-credentials chessvision`
+```
+
+* Builds for the CPU of the Mac it runs on (Apple Silicon or Intel); build on each to ship both.
+* Writable state lives in `~/Library/Application Support/Chess Vision/` (templates, live game logs, `chess-vision.log` with everything the terminal would have shown).
+* Without a Developer ID the app is ad-hoc signed: other Macs need right-click → Open once (or `xattr -dr com.apple.quarantine`).
+* First launch asks for **Screen Recording** permission for "Chess Vision" (System Settings → Privacy & Security); restart the app after granting.
 
 ---
 
@@ -406,7 +422,9 @@ equal opponent, best-move 30–50 %, contested ACPL 22–40, zero SUSPICIOUS sac
 
 **"No board found"** — board fully visible on any monitor (each display is scanned in turn), default green/beige theme, screen recording permitted.
 
-**Poor recognition** — re-run `python3 calibrate.py` at the starting position with nothing covering the board. `recalibrate.py` fills in missing light/dark variants.
+**Poor recognition** — show the starting position (new game) with nothing covering the board: the app re-cuts its templates when the position on screen is plainly the start but the templates disagree. From a checkout you can also re-run `python3 calibrate.py`.
+
+**Packaged app does nothing / quits** — read `~/Library/Application Support/Chess Vision/chess-vision.log`; the usual cause is Screen Recording permission not granted yet.
 
 **Wrong color** — color is inferred on first scan; restart between games if you switch.
 
