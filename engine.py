@@ -94,14 +94,22 @@ class ChessEngine:
                     self.engine.set_depth(self.depth)
         return self._safe_call(_call, fallback=None)
 
-    def get_top_moves(self, fen: str, n: int = 5) -> list[dict]:
-        """Get the top N moves with evaluations for the given position."""
+    def get_top_moves(self, fen: str, n: int = 5, depth: int | None = None) -> list[dict]:
+        """Get the top N moves with evaluations for the given position.
+        `depth` overrides the default for this call (thin endgames are
+        cheap to search deeper, and depth 12 sees no conversion plan)."""
         if not self._fen_ok(fen):
             print(f"Rejecting FEN without both kings: {fen}")
             return []
         def _call():
             self.engine.set_fen_position(fen)
-            raw = self.engine.get_top_moves(n)
+            if depth is not None and depth != self.depth:
+                self.engine.set_depth(depth)
+            try:
+                raw = self.engine.get_top_moves(n)
+            finally:
+                if depth is not None and depth != self.depth:
+                    self.engine.set_depth(self.depth)
             result = []
             for m in raw:
                 if m.get("Mate") is not None:

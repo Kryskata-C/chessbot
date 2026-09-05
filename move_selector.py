@@ -111,6 +111,7 @@ class HumanMoveSelector:
         # position. A human plateaus for a while, then converts — the bot
         # used to coast at +3 for 50 moves and grind K+B+P endgames.
         self._won_for: int = 0
+        self._mate_misses: int = 0  # consecutive "didn't see the mate" moves
 
         # Closed-loop controller: multiplies the base error budget so the
         # realized ELO converges to the target.
@@ -168,7 +169,14 @@ class HumanMoveSelector:
 
     def select_move(self, fen: str, piece_count: int) -> str | None:
         """Pick a human-like move. Returns a UCI string, or None if none."""
-        top_moves = self.engine.get_top_moves(fen, self._num_candidates())
+        # Thin boards get a deeper search: at depth 12 a won +4 endgame
+        # shows no plan and the bot shuffles for 30 moves playing "best"
+        # moves; at depth 18-22 the conversion (and the short mate) is
+        # visible, and few pieces make it cheap.
+        # (Depth 22 with 10 candidate lines took 40s in K+R vs K — MultiPV
+        # keeps searching every line to depth; 18 is ~0.1-0.7s there.)
+        depth = 18 if piece_count <= 8 else 16 if piece_count <= 14 else None
+        top_moves = self.engine.get_top_moves(fen, self._num_candidates(), depth=depth)
         if not top_moves:
             self.last_top_moves = []
             self.last_criticality = 0.0
@@ -206,26 +214,35 @@ class HumanMoveSelector:
             mating = [m for m in top_moves if m["eval"] >= _MATE_CP]
             mate_in = max(1, round((100000 - best_eval) / 100))
             pool = list(mating)
-            if mate_in >= 3:
+            # Q+R vs K took 16 moves from mate-in-13 with a flat temp of
+            # 120: short mates are found and played sharply, long ones may
+            # still be "missed" — but not move after move (a player who
+            # has been looking for the mate for two moves finds it).
+            mate_temp = 60.0 if mate_in <= 6 else 120.0
+            if mate_in >= 4 and self._mate_misses < 2:
                 # A club player sees mate-in-1/2 every time; a longer mate
                 # is often "missed" for a crushing ordinary move (chess.com
                 # marks it a miss, exactly the human texture we want).
                 # Such moves enter the softmax with a pseudo-loss that grows
                 # with playing strength and shrinks with mate length.
-                miss = 150.0 + 30.0 * mate_in + 0.3 * max(0.0, self._effective_elo() - 1500)
+                miss = (150.0 + 30.0 * mate_in + 0.3 * max(0.0, self._effective_elo() - 1500)
+                        + 120.0 * self._mate_misses)
                 for m in top_moves:
                     if m["eval"] < _MATE_CP and m["eval"] >= 700:
                         pool.append({**m, "eval": int(best_eval - miss), "_miss": m["eval"]})
             chosen = self._weighted_select(
-                board, pool, best_eval, 120.0, False, 400.0, raw_loss=True
+                board, pool, best_eval, mate_temp, False, 400.0, raw_loss=True
             )
             cushion = self._cushion(best_eval)
             self.last_cushion = cushion
             if any(m["move"] == chosen and "_miss" in m for m in pool):
+                self._mate_misses += 1
                 print(f"  [miss] mate in {mate_in} not seen — played {chosen} instead")
+            else:
+                self._mate_misses = 0
             self._record(top_moves, chosen, 0)
             self._run_controller()
-            self._log(chosen, top_moves, 0, 120.0, False, cushion)
+            self._log(chosen, top_moves, 0, mate_temp, False, cushion)
             return chosen
 
         # Decisive material (a piece up in a bare endgame, or +15): every
@@ -434,6 +451,7 @@ class HumanMoveSelector:
         self.last_best_eval = None
         self._target_margin = self._sample_target_margin()
         self._won_for = 0
+        self._mate_misses = 0
 
     def _press(self) -> float:
         """0 = happy to plateau, 1 = converting with intent. Grows with the
