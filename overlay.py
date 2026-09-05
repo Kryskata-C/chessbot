@@ -5,9 +5,9 @@ from __future__ import annotations
 import sys
 import math
 import time
-import ctypes
-import ctypes.util
 from typing import Optional
+
+import native
 from PyQt6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QPoint
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QFontMetrics, QPolygonF
 from PyQt6.QtWidgets import QWidget, QApplication
@@ -20,30 +20,10 @@ PIECE_UNICODE = {
 
 
 def exclude_from_screen_capture(widget) -> None:
-    """Set the widget's NSWindow sharingType to NSWindowSharingNone.
-
-    mss screen grabs otherwise include our own windows: an arrow or
-    ghost piece painted over a square corrupts piece recognition there,
-    and a rejected scan then never moves the visuals \u2014 a deadlock.
-    """
-    try:
-        lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
-        lib.sel_registerName.restype = ctypes.c_void_p
-        lib.sel_registerName.argtypes = [ctypes.c_char_p]
-        send = ctypes.cast(
-            lib.objc_msgSend,
-            ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p),
-        )
-        send_ulong = ctypes.cast(
-            lib.objc_msgSend,
-            ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong),
-        )
-        nswindow = send(int(widget.winId()), lib.sel_registerName(b"window"))
-        if nswindow:
-            # NSWindowSharingNone = 0
-            send_ulong(nswindow, lib.sel_registerName(b"setSharingType:"), 0)
-    except Exception as e:
-        print(f"screen-capture exclusion warning: {e}")
+    """Keep our own windows out of mss screen grabs: an arrow or ghost
+    piece painted over a square would corrupt piece recognition there,
+    and a rejected scan then never moves the visuals — a deadlock."""
+    native.exclude_from_capture(widget)
 
 
 class DebugBoardWindow(QWidget):
@@ -87,7 +67,7 @@ class DebugBoardWindow(QWidget):
         super().showEvent(event)
         if not self._capture_excluded:
             self._capture_excluded = True
-            # Delay slightly so the NSWindow is fully created
+            # Delay slightly so the native window is fully created
             QTimer.singleShot(100, lambda: exclude_from_screen_capture(self))
 
     def set_positions(self, positions: list[list[str | None]],
@@ -259,9 +239,8 @@ class OverlayWindow(QWidget):
         self.status_color: QColor = QColor(0, 120, 255)  # blue default
         self._status_timer: Optional[QTimer] = None
         self._native_setup_done = False
-        # Cached Cocoa handles + a watchdog that re-pins the window when a
-        # Space change (an app entering/leaving fullscreen) knocks it off
-        self._ns: Optional[dict] = None
+        # Watchdog that re-pins the window when the OS knocks it off (a
+        # macOS Space change, or a Windows app grabbing topmost)
         self._pin_timer: Optional[QTimer] = None
 
         # Which visual effects are enabled (menu toggles override these)
@@ -316,95 +295,32 @@ class OverlayWindow(QWidget):
         super().showEvent(event)
         if not self._native_setup_done:
             self._native_setup_done = True
-            # Delay slightly so the NSWindow is fully created
-            QTimer.singleShot(100, self._setup_macos_overlay)
+            # Delay slightly so the native window is fully created
+            QTimer.singleShot(100, self._setup_native_overlay)
 
-    def _setup_macos_overlay(self):
-        """Use Cocoa APIs to make the overlay truly pinned and invisible to clicks."""
+    def _setup_native_overlay(self):
+        """Pin, click-through and hide from capture (native.pin_overlay),
+        then keep checking once a second."""
         try:
-            lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
-
-            lib.sel_registerName.restype = ctypes.c_void_p
-            lib.sel_registerName.argtypes = [ctypes.c_char_p]
-
-            # Typed wrappers for objc_msgSend (required for arm64 ABI)
-            send = ctypes.cast(
-                lib.objc_msgSend,
-                ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p),
-            )
-            send_long = ctypes.cast(
-                lib.objc_msgSend,
-                ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long),
-            )
-            send_bool = ctypes.cast(
-                lib.objc_msgSend,
-                ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_bool),
-            )
-            get_long = ctypes.cast(
-                lib.objc_msgSend,
-                ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p),
-            )
-            self._ns = {
-                "sel": lib.sel_registerName, "send": send,
-                "send_long": send_long, "send_bool": send_bool,
-                "get_long": get_long,
-            }
             if self._pin_native():
-                print("macOS overlay: pinned, click-through, hidden from capture")
+                print("overlay: pinned, click-through, hidden from capture")
                 self._pin_timer = QTimer(self)
                 self._pin_timer.timeout.connect(self._pin_watchdog)
                 self._pin_timer.start(1000)
         except Exception as e:
-            print(f"macOS overlay setup warning: {e}")
-
-    def _nswindow(self) -> int:
-        ns = self._ns
-        if not ns:
-            return 0
-        return ns["send"](int(self.winId()), ns["sel"](b"window")) or 0
+            print(f"overlay setup warning: {e}")
 
     def _pin_native(self) -> bool:
-        """(Re)apply level, click-through, all-Spaces and capture exclusion.
-
-        Idempotent, so it can run after every show, screen move or Space
-        change. Returns False when the NSWindow isn't available yet.
-        """
-        ns = self._ns
-        nswindow = self._nswindow()
-        if not ns or not nswindow:
-            return False
-        sel = ns["sel"]
-        # Window level above everything (NSScreenSaverWindowLevel = 1000)
-        ns["send_long"](nswindow, sel(b"setLevel:"), 1000)
-        # Truly ignore all mouse events at the OS level
-        ns["send_bool"](nswindow, sel(b"setIgnoresMouseEvents:"), True)
-        # Show on all desktops/spaces, including other apps' fullscreen
-        # Spaces, and stay visible during Expose:
-        # canJoinAllSpaces (1<<0) | stationary (1<<4) | fullScreenAuxiliary (1<<8)
-        ns["send_long"](
-            nswindow, sel(b"setCollectionBehavior:"),
-            (1 << 0) | (1 << 4) | (1 << 8),
-        )
-        # Hide from screen capture: mss must never see our arrows or
-        # ghost pieces, or recognition reads them as board content
-        # (NSWindowSharingNone = 0)
-        ns["send_long"](nswindow, sel(b"setSharingType:"), 0)
-        # Re-order so a changed collection behavior takes effect on the
-        # Space that is active right now
-        ns["send"](nswindow, sel(b"orderFrontRegardless"))
-        return True
+        """(Re)apply level, click-through and capture exclusion. Idempotent,
+        so it can run after every show, screen move or Space change."""
+        return native.pin_overlay(self)
 
     def _pin_watchdog(self):
-        """Once a second: if a Space switch dropped the overlay from the
-        active Space (seen after another app leaves fullscreen), re-pin."""
+        """Once a second: if the OS dropped the overlay (a Space switch on
+        macOS, a topmost fight on Windows), re-pin."""
         if not self.isVisible():
             return
-        ns = self._ns
-        nswindow = self._nswindow()
-        if not ns or not nswindow:
-            return
-        on_space = ns["get_long"](nswindow, ns["sel"](b"isOnActiveSpace"))
-        if not on_space:
+        if native.overlay_needs_repin(self):
             self._pin_native()
 
     def set_status(self, text: str, color: Optional[QColor] = None, duration_ms: int = 0):

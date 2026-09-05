@@ -133,22 +133,12 @@ class Card(QDialog):
         """Show on every Space, including other apps' fullscreen Spaces
         (canJoinAllSpaces | fullScreenAuxiliary), at floating level. Same
         Cocoa trick the overlay uses; without it the card hides behind
-        whatever is fullscreen on that display."""
+        whatever is fullscreen on that display. No-op elsewhere."""
         if QApplication.platformName() != "cocoa":
-            return  # offscreen/xcb: winId() is not an NSView, objc calls would crash
+            return  # offscreen/xcb/windows: nothing to do (or winId() is not an NSView)
         try:
-            import ctypes, ctypes.util
-            lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
-            lib.sel_registerName.restype = ctypes.c_void_p
-            lib.sel_registerName.argtypes = [ctypes.c_char_p]
-            send = ctypes.cast(lib.objc_msgSend, ctypes.CFUNCTYPE(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p))
-            send_long = ctypes.cast(lib.objc_msgSend, ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long))
-            nswindow = send(int(self.winId()), lib.sel_registerName(b"window"))
-            if not nswindow:
-                return
-            send_long(nswindow, lib.sel_registerName(b"setCollectionBehavior:"), (1 << 0) | (1 << 8))
-            send_long(nswindow, lib.sel_registerName(b"setLevel:"), 3)  # NSFloatingWindowLevel
-            send(nswindow, lib.sel_registerName(b"orderFrontRegardless"))
+            import native
+            native.pin_card(self)
         except Exception as e:
             print(f"card space pinning warning: {e}")
 
