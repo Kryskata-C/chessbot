@@ -1272,7 +1272,26 @@ class ChessVision(QObject):
         QApplication.quit()
 
 
+def _setup_logging():
+    """The packaged app has no terminal: send prints and crashes to a log
+    file the user can send us (Application Support/Chess Vision/)."""
+    if not FROZEN:
+        return
+    try:
+        f = open(LOG_FILE, "a", buffering=1)
+        sys.stdout = sys.stderr = f
+        print(f"\n=== Chess Vision started {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+    except OSError:
+        return
+
+    def hook(exc_type, exc, tb):
+        import traceback
+        traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
+    sys.excepthook = hook
+
+
 def main():
+    _setup_logging()
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     app = QApplication(sys.argv)
