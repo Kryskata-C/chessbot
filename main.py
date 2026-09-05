@@ -29,6 +29,7 @@ from piece_recognizer import (
     get_templates,
     reload_templates,
     last_move_highlight,
+    harvest_templates,
 )
 from engine import ChessEngine
 from elo_estimator import EloEstimator, blend_opponent_elo
@@ -166,7 +167,13 @@ class ChessVision(QObject):
         # Piece-lifted guard: don't accept boards where pieces only
         # disappeared (someone is dragging), with a stale-out safety cap
         self._lift_skips: int = 0
-        self._MAX_LIFT_SKIPS = 6
+        # Pieces can only vanish through a capture, which also moves a
+        # piece, so a placement where pieces merely disappeared is never a
+        # position — a lifted piece, an animation frame, or a dimmed board
+        # (game-over veil, modal). Wait it out for a long while before
+        # believing recognition (a live game resynced to a phantom
+        # 3-piece board after only 6 skips).
+        self._MAX_LIFT_SKIPS = 40
         # King-missing guard: if a king stays invisible, our own overlay
         # visuals may be covering it — clear them once to break the loop
         self._king_miss_scans: int = 0
@@ -1084,6 +1091,14 @@ class ChessVision(QObject):
                 self._init_game_state(fen_position)
             else:
                 self._track_position(fen_position)
+            # The tracker confirmed this placement: any piece standing on
+            # a square colour we only had a synthesized template for is a
+            # free, real template (kings/queens on the "other" colour
+            # scored 0.43 vs 0.9 and kept vanishing in a live endgame).
+            if (self.game_board is not None
+                    and self.game_board.board_fen() == fen_position):
+                harvest_templates(screenshot, board, positions,
+                                  set(last_move_highlight(screenshot, board)))
             self._check_turn_against_highlight(
                 screenshot, board, positions, fen_position
             )
@@ -1145,6 +1160,11 @@ class ChessVision(QObject):
                 old_fen = f"{self.last_fen_position} {opp_color} {old_castling} {self._en_passant} 0 1"
                 new_fen = f"{fen_position} {self.player_color} {new_castling} {self._en_passant} 0 1"
                 try:
+                    # A mid-animation scan can produce a placement with the
+                    # side not to move in check; Stockfish dies on those.
+                    if not (chess.Board(old_fen).is_valid()
+                            and chess.Board(new_fen).is_valid()):
+                        raise ValueError("illegal placement — skipped")
                     eval_before = self.engine.get_evaluation(old_fen)
                     eval_after = self.engine.get_evaluation(new_fen)
                     # Both evals are from side-to-move POV:

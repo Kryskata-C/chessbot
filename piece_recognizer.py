@@ -41,6 +41,7 @@ def _load_templates() -> list[tuple[str, str, np.ndarray]]:
     """
     templates = []
     shaded: dict[str, np.ndarray] = {}
+    SYNTHESIZED.clear()
     if not os.path.isdir(TEMPLATE_DIR):
         return templates
     for fname in os.listdir(TEMPLATE_DIR):
@@ -125,6 +126,7 @@ def _synthesize_missing_shades(
                 continue
             src, dst = (light_bg, dark_bg) if shade == "_light" else (dark_bg, light_bg)
             base = other_stem.replace("_light", "").replace("_dark", "")
+            SYNTHESIZED.add(other_stem)
             made.append((base, PIECE_NAMES[base],
                          _repaint_background(img, src, dst)))
     if made:
@@ -134,6 +136,42 @@ def _synthesize_missing_shades(
 
 
 _templates: list[tuple[str, str, np.ndarray]] | None = None
+# Stems (e.g. "white_king_light") that only exist as repainted guesses;
+# the live game replaces them with real crops as the pieces visit those
+# squares (see harvest_templates).
+SYNTHESIZED: set[str] = set()
+
+
+def harvest_templates(screenshot: np.ndarray, board: dict,
+                      positions: list[list[str | None]],
+                      skip: set[tuple[int, int]] = frozenset()) -> int:
+    """Replace synthesized square-colour templates with real crops from a
+    placement the game tracker has confirmed. Returns how many were saved."""
+    if not SYNTHESIZED:
+        return 0
+    sym_to_name = {v: k for k, v in PIECE_NAMES.items()}
+    saved = 0
+    for row in range(8):
+        for col in range(8):
+            sym = positions[row][col]
+            if sym is None or (row, col) in skip:
+                continue
+            shade = "light" if (row + col) % 2 == 0 else "dark"
+            stem = f"{sym_to_name[sym]}_{shade}"
+            if stem not in SYNTHESIZED:
+                continue
+            img = _square_image(screenshot, board, row, col)
+            if img is None or img.shape[0] < 8 or img.shape[1] < 8:
+                continue
+            os.makedirs(TEMPLATE_DIR, exist_ok=True)
+            cv2.imwrite(os.path.join(TEMPLATE_DIR, stem + ".png"),
+                        cv2.resize(img, (TEMPLATE_SIZE, TEMPLATE_SIZE)))
+            SYNTHESIZED.discard(stem)
+            saved += 1
+    if saved:
+        print(f"Learned {saved} real square-colour template(s) from play")
+        reload_templates()
+    return saved
 
 
 def get_templates() -> list[tuple[str, str, np.ndarray]]:
