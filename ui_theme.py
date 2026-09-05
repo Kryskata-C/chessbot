@@ -133,6 +133,8 @@ class Card(QDialog):
         (canJoinAllSpaces | fullScreenAuxiliary), at floating level. Same
         Cocoa trick the overlay uses; without it the card hides behind
         whatever is fullscreen on that display."""
+        if QApplication.platformName() != "cocoa":
+            return  # offscreen/xcb: winId() is not an NSView, objc calls would crash
         try:
             import ctypes, ctypes.util
             lib = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
