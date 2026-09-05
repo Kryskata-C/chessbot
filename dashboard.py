@@ -74,6 +74,11 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
+    def end_headers(self):
+        # the website's Training tab (any origin) may read this local-only server
+        self.send_header("Access-Control-Allow-Origin", "*")
+        super().end_headers()
+
     def _json(self, obj):
         body = json.dumps(obj).encode()
         self.send_response(200)
