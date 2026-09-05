@@ -7,14 +7,19 @@ from stockfish import Stockfish
 
 
 def find_stockfish() -> str:
-    """Find the Stockfish binary path."""
-    path = shutil.which("stockfish")
-    if path:
-        return path
-    # Common brew install locations
-    for p in ["/opt/homebrew/bin/stockfish", "/usr/local/bin/stockfish"]:
-        import os
-        if os.path.exists(p):
+    """Find the Stockfish binary: the copy bundled with the app first, then
+    whatever is on PATH or in the usual Homebrew locations."""
+    import os
+    from paths import resource_path
+    candidates = [
+        resource_path("stockfish"),
+        resource_path("bin", "stockfish"),
+        shutil.which("stockfish") or "",
+        "/opt/homebrew/bin/stockfish",
+        "/usr/local/bin/stockfish",
+    ]
+    for p in candidates:
+        if p and os.path.isfile(p) and os.access(p, os.X_OK):
             return p
     raise FileNotFoundError(
         "Stockfish not found. Install with: brew install stockfish"

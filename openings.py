@@ -74,7 +74,7 @@ FOLLOW_PROBABILITY = 0.92   # occasionally a player forgets the line
 def _affinity_rng() -> random.Random:
     seed = os.environ.get("OPENINGS_SEED")
     if seed is None:
-        path = os.path.join(os.path.expanduser("~"), ".chess_vision_repertoire")
+        from paths import REPERTOIRE_FILE as path
         try:
             with open(path) as f:
                 seed = f.read().strip()

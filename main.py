@@ -36,6 +36,7 @@ from move_selector import HumanMoveSelector
 from overlay import OverlayWindow, DebugBoardWindow
 from opponent_rating import read_opponent_rating, ocr_available
 from session import SessionGovernor
+from paths import SESSION_FILE, LOG_FILE, FROZEN
 from recorder import GameRecorder
 from menu import MenuWindow
 
@@ -108,8 +109,7 @@ class ChessVision(QObject):
         self.engine = ChessEngine(depth=12, threads=2)
         self.move_selector = HumanMoveSelector(self.engine)
         # Cross-game governor keeps the profile human over a whole session
-        self.governor = SessionGovernor(
-            os.path.join(os.path.expanduser("~"), ".chess_vision_session.json"))
+        self.governor = SessionGovernor(SESSION_FILE)
         self.move_selector.session_temp_mult = self.governor.temp_mult
         self.move_selector.session_edge_shift = self.governor.edge_shift
         self.recorder = GameRecorder()  # every live game -> live_games/

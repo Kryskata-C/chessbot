@@ -14,7 +14,7 @@ import time
 import chess
 import chess.pgn
 
-LIVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "live_games")
+from paths import LIVE_GAMES_DIR as LIVE_DIR
 
 
 class GameRecorder:

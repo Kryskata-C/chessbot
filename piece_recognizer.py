@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 import chess
 
-TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
+from paths import TEMPLATE_DIR
 TEMPLATE_SIZE = 80
 MATCH_THRESHOLD = 0.55
 # Relaxed threshold used only when a king is missing from the board.

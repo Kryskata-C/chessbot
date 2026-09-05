@@ -15,7 +15,7 @@ from capture import capture_screen
 from board_detector import detect_board
 
 
-TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "templates")
+from paths import TEMPLATE_DIR
 TEMPLATE_SIZE = 80
 
 # Starting position layout (row 0 = top of screen = rank 8 for white-bottom)
