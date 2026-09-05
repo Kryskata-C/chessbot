@@ -1,0 +1,83 @@
+name: Windows build
+
+# Builds ChessVision.exe on a Windows runner (PyInstaller cannot cross-compile).
+#   - every push to main that touches the app: zip attached to the run as an artifact
+#   - a v* tag, or "Run workflow" with publish=true: also published as a GitHub Release
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths-ignore: ["selfplay_runs/**", "selfplay_pgns/**", "live_games/**", "README.md", "dashboard/**"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version string for the zip name"
+        default: "1.0.0"
+      publish:
+        description: "Also publish as a GitHub Release (win-<version>)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Install Windows OCR (optional)
+        continue-on-error: true
+        run: pip install -r requirements-win-ocr.txt
+
+      - name: Import smoke test (offscreen Qt)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -c "import native, paths, overlay, ui_theme, permissions, auth, opponent_rating, engine, menu, account_ui; print('imports ok, data dir', paths.data_dir())"
+
+      - name: Build
+        env:
+          CV_VERSION: ${{ github.event.inputs.version || '1.0.0' }}
+        run: powershell -ExecutionPolicy Bypass -File packaging\build_win.ps1
+
+      - name: Launch smoke test (exe starts and writes its log)
+        shell: pwsh
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          $p = Start-Process -FilePath dist\ChessVision\ChessVision.exe -PassThru
+          Start-Sleep -Seconds 12
+          $log = Join-Path $env:LOCALAPPDATA "Chess Vision\chess-vision.log"
+          if ($p.HasExited) { Write-Host "exe exited early with $($p.ExitCode)" }
+          if (Test-Path $log) { Get-Content $log } else { Write-Host "no log written at $log" }
+          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }
+          if (-not (Test-Path $log)) { throw "the exe never started (no log)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChessVision-windows-x64
+          path: dist/ChessVision-*-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('win-{0}', github.event.inputs.version) }}
+          name: Chess Vision for Windows ${{ github.event.inputs.version || github.ref_name }}
+          body: |
+            Windows x64 test build. Unzip, run `ChessVision\ChessVision.exe`.
+            Windows SmartScreen will warn (unsigned): More info → Run anyway.
+            Log file: `%LOCALAPPDATA%\Chess Vision\chess-vision.log`.
+          files: dist/ChessVision-*-windows-x64.zip
