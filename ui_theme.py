@@ -116,10 +116,10 @@ class Card(QDialog):
         """Centre on the display the cursor is on. A move() is only honoured
         once macOS has mapped the window, and moving too early lands the
         card off-screen on multi-display setups, so place, check, retry."""
-        # The primary display: a fullscreen app on another display would
-        # hide the card behind its Space, and the menu bar display is the
-        # one the user reaches for anyway.
-        screen = QApplication.primaryScreen()
+        # The display under the cursor: that is where the user is working
+        # (chess.com on the external display), and join_all_spaces() lets
+        # the card sit over a fullscreen app there. Primary as a fallback.
+        screen = QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
         if screen is None:
             return
         g = screen.availableGeometry()
@@ -151,8 +151,10 @@ class Card(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
-        QTimer.singleShot(60, self.join_all_spaces)
         self.center_on_screen()
+        # Re-place once the window can join fullscreen Spaces: a move onto
+        # such a display before that is bounced back to the primary one.
+        QTimer.singleShot(60, lambda: (self.join_all_spaces(), self.center_on_screen()))
 
     def _place(self, target: QPoint, tries: int):
         self.move(target)
