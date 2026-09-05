@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxL
                              QHeaderView)
 
 from auth import Accounts, AuthError, Profile
-from ui_theme import Card, section, ACC, MUTED, RED, AMBER
+from ui_theme import Card, section, ACC, MUTED, RED, AMBER, BLUE
 
 
 class LoginWindow(Card):
@@ -116,7 +116,8 @@ class LoginWindow(Card):
         self.tag.setText("Signed in.")
         self.who.setText(profile.email)
         self.state.setText(profile.status_text.capitalize())
-        self.state.setObjectName("ok" if profile.licensed else "err"); self.state.setStyleSheet("")
+        self.state.setObjectName("ok" if profile.licensed else "err")
+        self.state.setStyleSheet(f"color: {BLUE};" if profile.is_friend else "")
         self.admin_btn.setVisible(profile.is_admin)
         self.continue_btn.setEnabled(profile.licensed)
         if not profile.licensed:
@@ -141,8 +142,12 @@ class LoginWindow(Card):
 
 
 
+ROLES = ("user", "friend", "admin")
+
+
 def _status_of(p: Profile) -> tuple[str, str]:
     if p.is_admin: return "admin", ACC
+    if p.is_friend: return "friend · unlimited", BLUE
     if not p.active: return "inactive", MUTED
     if p.expires_at and p.expires_at < datetime.now(timezone.utc): return "expired", RED
     return "active", ACC
@@ -169,7 +174,8 @@ class AdminWindow(Card):
         self.table.setShowGrid(False); self.table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         lay.addWidget(self.table)
-        self.msg = QLabel("Tick active and set an expiry to license someone. Empty expiry = no end date.")
+        self.msg = QLabel("Tick active and set an expiry to license someone. Empty expiry = no end date. "
+                          "Role friend = unlimited access, no admin powers.")
         self.msg.setObjectName("dim"); lay.addWidget(self.msg)
         self.reload()
 
@@ -186,7 +192,7 @@ class AdminWindow(Card):
             text, colour = _status_of(u)
             st = QLabel(text); st.setStyleSheet(f"color: {colour}; font-family: SF Mono, Menlo; font-size: 11px; padding-left: 6px;")
             self.table.setCellWidget(r, 1, st)
-            role = QComboBox(); role.addItems(["user", "admin"]); role.setCurrentText(u.role)
+            role = QComboBox(); role.addItems(list(ROLES)); role.setCurrentText(u.role if u.role in ROLES else "user")
             self.table.setCellWidget(r, 2, role)
             active = QCheckBox(); active.setChecked(u.active)
             cell = QWidget(); cl = QHBoxLayout(cell); cl.setContentsMargins(0, 0, 0, 0)
