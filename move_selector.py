@@ -204,24 +204,38 @@ class HumanMoveSelector:
         # not). Loss is recorded as 0: a slower mate is not an error.
         if best_eval >= _MATE_CP:
             mating = [m for m in top_moves if m["eval"] >= _MATE_CP]
+            mate_in = max(1, round((100000 - best_eval) / 100))
+            pool = list(mating)
+            if mate_in >= 3:
+                # A club player sees mate-in-1/2 every time; a longer mate
+                # is often "missed" for a crushing ordinary move (chess.com
+                # marks it a miss, exactly the human texture we want).
+                # Such moves enter the softmax with a pseudo-loss that grows
+                # with playing strength and shrinks with mate length.
+                miss = 150.0 + 30.0 * mate_in + 0.3 * max(0.0, self._effective_elo() - 1500)
+                for m in top_moves:
+                    if m["eval"] < _MATE_CP and m["eval"] >= 700:
+                        pool.append({**m, "eval": int(best_eval - miss), "_miss": m["eval"]})
             chosen = self._weighted_select(
-                board, mating, best_eval, 60.0, False, 250.0, raw_loss=True
+                board, pool, best_eval, 120.0, False, 400.0, raw_loss=True
             )
             cushion = self._cushion(best_eval)
             self.last_cushion = cushion
+            if any(m["move"] == chosen and "_miss" in m for m in pool):
+                print(f"  [miss] mate in {mate_in} not seen — played {chosen} instead")
             self._record(top_moves, chosen, 0)
             self._run_controller()
-            self._log(chosen, top_moves, 0, 60.0, False, cushion)
+            self._log(chosen, top_moves, 0, 120.0, False, cushion)
             return chosen
 
         # Decisive material (a piece up in a bare endgame, or +15): every
         # human converts this, and the engine's line is the human line.
         # Near-best play with a little slack — never Bh1-Be4 shuffles at
         # +50 waiting for something to happen.
-        if best_eval >= 1500 or (best_eval >= 900 and piece_count <= 8):
-            pool = [m for m in top_moves if best_eval - m["eval"] <= 80] or top_moves[:1]
+        if best_eval >= 2500 or (best_eval >= 900 and piece_count <= 8):
+            pool = [m for m in top_moves if best_eval - m["eval"] <= 150] or top_moves[:1]
             chosen = self._weighted_select(
-                board, pool, best_eval, 15.0, False, 80.0, raw_loss=True
+                board, pool, best_eval, 60.0, False, 150.0, raw_loss=True
             )
             cushion = self._cushion(best_eval)
             self.last_cushion = cushion
@@ -229,7 +243,7 @@ class HumanMoveSelector:
             loss = max(0, best_eval - chosen_eval)
             self._record(top_moves, chosen, loss)
             self._run_controller()
-            self._log(chosen, top_moves, loss, 15.0, False, cushion)
+            self._log(chosen, top_moves, loss, 60.0, False, cushion)
             return chosen
 
         # How far this position is even allowed to deviate. Forcing positions
@@ -689,11 +703,20 @@ class HumanMoveSelector:
                 # conversion clock runs, and the whole temperature tightens.
                 temp *= 1.0 + min(over / max(self._target_margin, 80), 0.8) * (1.0 - press)
         if press > 0:
-            temp *= 1.0 - 0.55 * press
+            temp *= 1.0 - 0.35 * press
+
+        # Winning big is where humans get sloppy, not sharp: whatever the
+        # criticality and controller did above, keep a floor of looseness
+        # that scales with the cushion (the ceiling and win floor still
+        # forbid throwing the game). Not in mate/decisive modes (handled
+        # before we get here).
+        cushion_now = self._cushion(best_eval)
+        if best_eval >= 400 and best_eval < _MATE_CP:
+            temp = max(temp, min(160.0, 40.0 + 0.06 * cushion_now))
 
         # Avoid a suspiciously perfect streak.
         if self._consecutive_best >= 6:
-            temp *= min(1.0 + 0.06 * (self._consecutive_best - 5), 1.3)
+            temp *= min(1.0 + 0.08 * (self._consecutive_best - 5), 1.5)
 
         floor = 3.0 if best_eval <= -250 else 6.0
         return max(floor, temp), coasting
@@ -718,6 +741,23 @@ class HumanMoveSelector:
         if len(top_moves) < 2:
             return 1.0
         gap = top_moves[0]["eval"] - top_moves[1]["eval"]
+        # A gap only forces the move when the alternative is actually bad.
+        # At +9 the second-best move is still +7: nobody is "forced", and
+        # treating it so made the bot play a 15-move engine-perfect finish
+        # (92% accuracy, game rating 2200 at target 1700).
+        second = top_moves[1]["eval"]
+        if 0 < second < _MATE_CP:
+            # Alternative keeps a small edge (<=100): fully forcing. Keeps a
+            # clear win (>=250): mostly a matter of taste (x0.35), fading
+            # further as the position becomes decided.
+            if second <= 100:
+                f = 1.0
+            elif second <= 250:
+                f = 1.0 - 0.65 * (second - 100) / 150.0
+            else:
+                f = 0.35 * max(0.25, decided_factor(second)) / 1.0
+                f = max(0.1, f)
+            gap *= f
         if gap <= 30:
             return 0.0
         return min(1.0, (gap - 30) / 170)
