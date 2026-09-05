@@ -1377,10 +1377,22 @@ def main():
 
     login.signed_in.connect(on_signed_in)
     vision.menu.sign_out.connect(on_sign_out)
-    if login.try_restore() and login.profile and login.profile.licensed:
-        login._continue()
+
+    def start_sign_in():
+        if login.try_restore() and login.profile and login.profile.licensed:
+            login._continue()
+        else:
+            login.show()
+
+    # Permissions first: Screen Recording is asked for on launch, not at
+    # the first (silently black) capture during a game.
+    from permissions import PermissionWindow, screen_recording_granted
+    perms = PermissionWindow()
+    perms.granted.connect(start_sign_in)
+    if screen_recording_granted() and not os.environ.get("CHESS_VISION_FORCE_PERMS"):
+        start_sign_in()
     else:
-        login.show()
+        perms.start()
 
     quit_shortcut = QShortcut(QKeySequence("Ctrl+Q"), vision.overlay)
     quit_shortcut.activated.connect(vision.stop)
