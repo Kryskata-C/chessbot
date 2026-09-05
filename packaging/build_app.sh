@@ -31,10 +31,16 @@ CV_VERSION="$VERSION" $PY -m PyInstaller --noconfirm --clean ChessVision.spec
 APP="dist/Chess Vision.app"
 
 # 4. Sign. Every Mach-O inside gets signed; ad-hoc when no identity is given.
-IDENTITY="${CV_SIGN_IDENTITY:--}"
+IDENTITY="${CV_SIGN_IDENTITY:-}"
+if [[ -z "$IDENTITY" ]] && security find-identity -v -p codesigning | grep -q "Chess Vision Dev"; then
+  IDENTITY="Chess Vision Dev"   # local dev identity (packaging/make_dev_identity.sh)
+fi
+IDENTITY="${IDENTITY:--}"
 ENT=packaging/entitlements.plist
 if [[ "$IDENTITY" == "-" ]]; then
   codesign --force --deep --sign - "$APP"
+elif [[ "$IDENTITY" == "Chess Vision Dev" ]]; then
+  codesign --force --deep --sign "$IDENTITY" "$APP"   # self-signed: no timestamp/hardened runtime
 else
   codesign --force --deep --options runtime --timestamp --entitlements "$ENT" --sign "$IDENTITY" "$APP"
 fi

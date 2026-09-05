@@ -71,7 +71,9 @@ class PermissionWindow(Card):
             "has to allow it to record the screen.\n\n"
             "1. Click Open System Settings.\n"
             "2. Turn on Chess Vision under Screen Recording.\n"
-            "3. Come back here — the app relaunches itself.")
+            "3. Come back here — the app relaunches itself.\n\n"
+            "Already switched on? macOS forgets the grant when the app is "
+            "updated: switch Chess Vision off and on again in that list.")
         body.setWordWrap(True); lay.addWidget(body)
         self.state = QLabel("Waiting for permission…"); self.state.setObjectName("dim")
         self.state.setWordWrap(True); lay.addWidget(self.state)
@@ -85,6 +87,10 @@ class PermissionWindow(Card):
         self.relaunch_btn.hide()
         row.addWidget(self.open_btn); row.addWidget(self.relaunch_btn)
         lay.addLayout(row)
+        self.skip_btn = QPushButton("Continue without it"); self.skip_btn.setObjectName("link")
+        self.skip_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.skip_btn.clicked.connect(self._skip)
+        lay.addWidget(self.skip_btn, alignment=Qt.AlignmentFlag.AlignCenter)
         self._timer = QTimer(self); self._timer.timeout.connect(self._poll)
         self._done = False
 
@@ -103,6 +109,14 @@ class PermissionWindow(Card):
         if screen_recording_granted():
             self._timer.stop()
             self._on_granted()
+
+    def _skip(self) -> None:
+        """Go on regardless (captures may come back black until the
+        permission is really in place)."""
+        self._timer.stop()
+        self._done = True
+        self.hide()
+        self.granted.emit()
 
     def _on_granted(self) -> None:
         if self._done:
