@@ -420,6 +420,10 @@ shipped in `config.py` can't read anyone else's row. Sessions are remembered in 
 - Roles: `user` needs an active subscription; `friend` has unlimited access with no admin powers
   (shown in blue); `admin` has everything. Adding `friend` to an existing project: run
   `supabase/friend_role.sql` in the Supabase SQL editor.
+- Game history: every finished live game (and unfinished ones with moves, e.g. resignations the
+  board never shows) is uploaded to `public.games` by `stats.py`; the website dashboard shows
+  played / won / drawn / lost, accuracy and a recent-games table. One-time setup:
+  `supabase/games.sql` in the SQL editor.
 - Training dashboard on the website: `python export_training.py` snapshots `selfplay_runs/` into
   `../chess-vision-site/training/` and regenerates `training.html` (admin-only tab). The tab goes
   live automatically when `dashboard.py` is running locally.
