@@ -24,6 +24,11 @@ class GameRecorder:
         self._moves: list[str] = []
         self._meta: dict = {}
         self._resyncs = 0
+        self._pgn: str | None = None
+        # Called with summary() when a game ends (main.py hooks the uploader
+        # and adds the move selector's per-game stats through `stats_fn`).
+        self.on_finish = None
+        self.stats_fn = None
 
     def start(self, player_color: str | None, target_elo: int) -> None:
         self.finish(None)
@@ -81,12 +86,38 @@ class GameRecorder:
                    resyncs=self._resyncs)
         self._f.close()
         self._f = None
+        self._meta["result"] = result
+        self._meta["ended"] = time.time()
+        self._pgn = None
         try:
-            self._write_pgn(result)
+            self._pgn = self._write_pgn(result)
         except Exception as e:
             print(f"PGN write failed: {e}")
+        if self.on_finish is not None:
+            try:
+                self.on_finish(self.summary())
+            except Exception as e:
+                print(f"game summary hook failed: {e}")
 
-    def _write_pgn(self, result: str | None) -> None:
+    def summary(self) -> dict:
+        """Everything the website shows about a game (see stats.py)."""
+        colour = self._meta.get("color")
+        result = self._meta.get("result")
+        score = None
+        if result in ("1-0", "0-1") and colour:
+            score = 1.0 if (result == "1-0") == (colour == "w") else 0.0
+        elif result == "1/2-1/2":
+            score = 0.5
+        out = {**self._meta, "score": score, "plies": len(self._moves),
+               "resyncs": self._resyncs, "pgn": self._pgn}
+        if self.stats_fn is not None:
+            try:
+                out.update(self.stats_fn() or {})
+            except Exception as e:
+                print(f"game stats failed: {e}")
+        return out
+
+    def _write_pgn(self, result: str | None) -> str:
         board = chess.Board()
         game = chess.pgn.Game()
         node = game
@@ -106,6 +137,8 @@ class GameRecorder:
         game.headers["Result"] = result or "*"
         if self._resyncs:
             game.headers["Annotator"] = f"{self._resyncs} resync(s); moves may be incomplete"
+        text = str(game)
         with open(self._path + ".pgn", "w") as f:
-            print(game, file=f)
+            f.write(text + "\n")
         print(f"Game saved: {self._path}.pgn")
+        return text

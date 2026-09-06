@@ -40,6 +40,7 @@ from session import SessionGovernor
 from paths import SESSION_FILE, LOG_FILE, FROZEN
 from startpos import looks_like_start_position, white_on_top, start_layout
 from recorder import GameRecorder
+from stats import GameUploader
 from menu import MenuWindow
 
 SCAN_INTERVAL_MS = 400
@@ -115,6 +116,8 @@ class ChessVision(QObject):
         self.move_selector.session_temp_mult = self.governor.temp_mult
         self.move_selector.session_edge_shift = self.governor.edge_shift
         self.recorder = GameRecorder()  # every live game -> live_games/
+        self.recorder.stats_fn = self._game_stats
+        self.uploader: GameUploader | None = None  # set once signed in
         self.overlay = OverlayWindow()
         self.debug_board = DebugBoardWindow()
         self.menu = MenuWindow()
@@ -243,6 +246,7 @@ class ChessVision(QObject):
         self._auto_color = color == "auto"
         self.player_color = None if self._auto_color else color
         self.target_elo = target_elo
+        self.recorder.finish(None)  # a game left open from a previous Start
         self.move_selector.set_target_elo(target_elo)
         self.recorder.start(self.player_color, target_elo)
         self.current_turn = "w"  # white always moves first
@@ -471,6 +475,23 @@ class ChessVision(QObject):
         # somewhere, so an equal count means an even number of half-moves
         # — the side to move hasn't changed.
         return "same"
+
+    def set_accounts(self, accounts) -> None:
+        """Once signed in: every finished game is uploaded to the account
+        server for the website's dashboard (stats.py)."""
+        self.uploader = GameUploader(accounts)
+        self.recorder.on_finish = self.uploader.upload
+
+    def _game_stats(self) -> dict:
+        """Per-game numbers for the recorder's summary, read before the
+        selector is reset for the next game."""
+        return {
+            "accuracy": self.move_selector.get_accuracy(),
+            "acpl": self.move_selector.get_avg_cpl(),
+            "contested_acpl": self.move_selector.get_contested_cpl(),
+            "realized_elo": self.move_selector.get_realized_elo(),
+            "opp_estimate": self.elo_estimator.get_estimate(),
+        }
 
     def _reset_game_state(self):
         """Reset all per-game state for a new game."""
@@ -1022,6 +1043,7 @@ class ChessVision(QObject):
                 self.last_fen_position is not None
                 and self.last_fen_position != STARTING_PLACEMENT))
             if was_playing and piece_count >= 30 and fen_position == STARTING_PLACEMENT:
+                self.recorder.finish(None)  # resigned / timed out / not seen: keep it
                 self._reset_game_state()
                 self.recorder.start(self.player_color, self.target_elo)
                 self._status("New game detected!", GREEN, duration_ms=3000)
@@ -1033,6 +1055,7 @@ class ChessVision(QObject):
             if (self._auto_color and was_playing and piece_count >= 30
                     and fen_position == STARTING_PLACEMENT_FLIPPED):
                 self.player_color = "b" if self.player_color == "w" else "w"
+                self.recorder.finish(None)
                 self._reset_game_state()
                 self.recorder.start(self.player_color, self.target_elo)
                 color_name = "White" if self.player_color == "w" else "Black"
@@ -1370,6 +1393,7 @@ def main():
 
     def on_signed_in(profile):
         print(f"Signed in: {profile.email} ({profile.status_text})")
+        vision.set_accounts(accounts)
         vision.menu.set_account(profile.email, profile.status_text)
         vision.menu.show()
 
