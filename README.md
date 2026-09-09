@@ -460,4 +460,4 @@ The v1 human layer is a hand-tuned generative model. The plan is to make each pi
 
 ## 📜 License
 
-Proprietary — all rights reserved. Source code is visible for educational purposes only. See [LICENSE](LICENSE).
+Proprietary — all rights reserved. This is **not** an open source project. The source code is publicly visible for reading only: no copying, no reuse in other projects, no modification, no redistribution, and no commercial or competing use of any kind without written permission. See [LICENSE](LICENSE).

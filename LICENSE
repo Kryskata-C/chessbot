@@ -1,33 +1,74 @@
-Chess Vision - Proprietary License
+Chess Vision - Proprietary License (All Rights Reserved)
 
 Copyright (c) 2026 Kryskata-C. All rights reserved.
 
-This software and its source code are the exclusive property of the copyright
-holder. The source code is made publicly visible for educational and reference
-purposes only.
+This software, its source code, and all associated assets, documentation, and
+materials (collectively, the "Software") are the exclusive property of the
+copyright holder. The Software is NOT open source and is NOT free software.
+Public visibility of the source code does not grant any license or rights
+beyond those explicitly stated below.
 
-You MAY:
-  - View and read the source code
-  - Fork the repository for personal, non-commercial experimentation only
-  - Reference small snippets (under 20 lines) for educational purposes with
-    proper attribution to the original author
+1. LIMITED PERMISSION
 
-You MAY NOT:
-  - Copy, reproduce, or redistribute this software or any substantial portion
-    of its source code
-  - Modify and distribute derivative works based on this software
-  - Use this software or its source code for any commercial purpose
-  - Sell, sublicense, or otherwise monetize this software in any form
-  - Claim authorship or ownership of this software or any part of it
-  - Publish or redistribute modified or unmodified copies under any name
-  - Use this software as part of another product, tool, or service
+The ONLY permission granted is:
+  - You may view and read the source code in this repository, in its original
+    location, for personal reference.
 
-Any unauthorized use, reproduction, or distribution of this software is
-strictly prohibited and may result in legal action.
+No other right or license, express or implied, is granted. All rights not
+expressly granted are reserved by the copyright holder.
+
+2. PROHIBITED USES
+
+Without prior written permission from the copyright holder, you may NOT:
+  - Copy, reproduce, download for reuse, or redistribute the Software or any
+    portion of its source code, in any form or medium
+  - Use any part of the Software or its source code in your own projects,
+    products, tools, services, or codebases, whether open source or
+    proprietary
+  - Modify, adapt, translate, or create derivative works based on the
+    Software in whole or in part
+  - Use the Software or its source code for any commercial purpose whatsoever
+  - Build, develop, or assist in developing any product or service that
+    competes with the Software or with the copyright holder
+  - Sell, rent, lease, sublicense, distribute, host, or otherwise monetize
+    the Software in any form
+  - Use the Software or its source code to train, fine-tune, or evaluate
+    machine learning or artificial intelligence models
+  - Fork, mirror, or republish this repository or its contents, except for
+    ephemeral copies created automatically by the hosting platform as a
+    technical necessity of viewing it
+  - Remove, alter, or obscure any copyright, license, or attribution notices
+  - Claim authorship or ownership of the Software or any part of it
+  - Reverse engineer, decompile, or disassemble any compiled or packaged
+    distribution of the Software
+
+3. NO USE RIGHTS
+
+Viewing the source code does not grant you the right to run, execute, deploy,
+or operate the Software. Running or using the Software requires a separate,
+explicit authorization from the copyright holder.
+
+4. TERMINATION
+
+Any violation of these terms immediately and automatically terminates the
+limited permission granted above. Upon termination, you must destroy any
+copies of the Software in your possession.
+
+5. NO WARRANTY
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES, OR
-OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF,
+OR IN CONNECTION WITH THE SOFTWARE OR THE USE OF OR OTHER DEALINGS IN THE
+SOFTWARE.
 
-For licensing inquiries, contact the copyright holder via GitHub:
-https://github.com/Kryskata-C
+6. ENFORCEMENT
+
+Any unauthorized use, reproduction, distribution, or exploitation of the
+Software is strictly prohibited and constitutes copyright infringement, which
+may result in civil and/or criminal legal action.
+
+For licensing inquiries or permission requests, contact the copyright holder
+via GitHub: https://github.com/Kryskata-C
