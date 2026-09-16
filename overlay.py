@@ -453,7 +453,7 @@ class OverlayWindow(QWidget):
             if self._think_timer is None:
                 self._think_timer = QTimer(self)
                 self._think_timer.timeout.connect(self._tick_think)
-            self._think_timer.start(250)
+            self._think_timer.start(100)
         else:
             self._think_deadline = None
             if self._think_timer is not None:
@@ -474,7 +474,7 @@ class OverlayWindow(QWidget):
             return
         remaining = self._think_deadline - time.monotonic()
         if remaining > 0:
-            text = f"wait {math.ceil(remaining)}s"
+            text = f"wait {remaining:.1f}s" if remaining < 3 else f"wait {math.ceil(remaining)}s"
             fg, bg = QColor(255, 220, 90), QColor(20, 20, 20, 215)
         else:
             text = "move"
