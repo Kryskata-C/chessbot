@@ -7,6 +7,13 @@ packaging/stage/ first. The app is windowed (no terminal); prints go to
 """
 import os
 
+
+def _version():
+    ns = {}
+    with open("version.py") as f:
+        exec(f.read(), ns)
+    return ns["__version__"]
+
 HERE = os.path.abspath(os.getcwd())
 STAGE = os.path.join(HERE, "packaging", "stage")
 stockfish = os.path.join(STAGE, "stockfish")
@@ -70,7 +77,7 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "Chess Vision",
         "CFBundleDisplayName": "Chess Vision",
-        "CFBundleShortVersionString": os.environ.get("CV_VERSION", "1.0.0"),
+        "CFBundleShortVersionString": os.environ.get("CV_VERSION") or _version(),
         "CFBundleVersion": os.environ.get("CV_BUILD", "1"),
         "LSMinimumSystemVersion": "12.0",
         "NSHighResolutionCapable": True,

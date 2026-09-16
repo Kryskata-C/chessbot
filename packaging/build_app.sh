@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PY=./venv/bin/python
-VERSION="${CV_VERSION:-1.0.0}"
+VERSION="${CV_VERSION:-$($PY -c "from version import __version__; print(__version__)")}"
 ARCH="$(uname -m)"
 
 # 1. Stage Stockfish. Prefer an explicit CV_STOCKFISH, else Homebrew's.

@@ -9,7 +9,7 @@
 # the last ~15 years; swap in "avx2" for ~20% more speed on modern CPUs.
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
-$Version = if ($env:CV_VERSION) { $env:CV_VERSION } else { "1.0.0" }
+$Version = if ($env:CV_VERSION) { $env:CV_VERSION } else { (Select-String -Path "version.py" -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value }
 $Py = if ($env:CV_PYTHON) { $env:CV_PYTHON } else { "python" }
 $SfBuild = if ($env:CV_STOCKFISH_BUILD) { $env:CV_STOCKFISH_BUILD } else { "sse41-popcnt" }
 

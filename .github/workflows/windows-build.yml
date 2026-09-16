@@ -48,7 +48,7 @@ jobs:
 
       - name: Build
         env:
-          CV_VERSION: ${{ github.event.inputs.version || '1.0.0' }}
+          CV_VERSION: ${{ github.event.inputs.version }}  # empty -> version.py
         run: powershell -ExecutionPolicy Bypass -File packaging\build_win.ps1
 
       - name: Launch smoke test (exe starts and writes its log)
