@@ -54,6 +54,7 @@ import chess
 from engine import ChessEngine
 from elo_estimator import effective_loss, decided_factor, EloEstimator, elo_to_acpl, acpl_to_elo
 from openings import book_move
+from think_time import ThinkTimer
 
 # Piece values in centipawns, for judging captures and apparent hangs.
 _PIECE_VALUE = {
@@ -96,6 +97,7 @@ class HumanMoveSelector:
         # Per-game state
         self._eval_history: list[int] = []
         self._move_number: int = 0
+        self.timer = ThinkTimer()   # clock-aware think times (think_time.py)
         self._consecutive_best: int = 0
         # The bot's own recent moves, for move-to-move coherence (humans
         # don't shuffle a rook out and back, or re-move one piece aimlessly).
@@ -376,36 +378,21 @@ class HumanMoveSelector:
         return uci
 
     def suggest_think_time(self, chosen: str, piece_count: int) -> float:
-        """How long a human would plausibly think before playing `chosen`.
-
-        Timing is a tell chess.com looks at as much as move quality:
-        recaptures and only-moves come instantly, real decisions take a
-        while, worse positions get more thought, slips happen when moving
-        fast. Seconds, log-normally jittered, for the overlay countdown.
-        """
+        """How long a human would plausibly think before playing `chosen`,
+        given the clock (think_time.ThinkTimer): recaptures and only-moves
+        come instantly, real decisions take a while, worse positions get
+        more thought, slips happen when moving fast, and time trouble makes
+        everything quick. Seconds, for the overlay countdown."""
         top = self.last_top_moves
         best = top[0]["eval"] if top else 0
         chosen_eval = next((m["eval"] for m in top if m["move"] == chosen), best)
         loss = max(0, best - chosen_eval)
-        crit = self.last_criticality
-        if self._move_number < 8:
-            base = 3.0                      # opening: familiar territory
-        elif crit >= 0.6:
-            base = 2.5                      # one obvious move
-        elif loss >= 60:
-            base = 4.0                      # slips happen when moving fast
-        elif crit < 0.15:
-            base = 11.0                     # several playable moves: a real decision
-        else:
-            base = 7.0
-        if self.last_cushion < 0:
-            base *= 1.4                     # under pressure, people think longer
-        if piece_count <= 10:
-            base *= 0.7                     # simple endgames go quicker
-        if len(top) >= 2 and abs(top[0]["eval"] - top[1]["eval"]) < 15 and crit < 0.3:
-            base *= 1.2                     # two near-equal options
-        seconds = base * math.exp(random.gauss(0.0, 0.35))
-        return max(1.0, min(30.0, seconds))
+        near_equal = (len(top) >= 2 and abs(top[0]["eval"] - top[1]["eval"]) < 15
+                      and self.last_criticality < 0.3)
+        return self.timer.suggest(
+            crit=self.last_criticality, loss=loss, move_number=self._move_number,
+            piece_count=piece_count, under_pressure=self.last_cushion < 0,
+            near_equal=near_equal)
 
     def get_accuracy(self) -> float | None:
         if self._total_moves == 0:
@@ -425,6 +412,7 @@ class HumanMoveSelector:
 
     def reset(self) -> None:
         """Clear per-game state and sample a fresh game script."""
+        self.timer.new_game()
         self._eval_history.clear()
         self._move_number = 0
         self._consecutive_best = 0
