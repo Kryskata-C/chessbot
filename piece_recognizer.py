@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import os
 import cv2
 import numpy as np
@@ -270,6 +271,8 @@ def _recover_missing_king(
     if best_rc is not None:
         positions[best_rc[0]][best_rc[1]] = king_sym
         print(f"Recovered missing {king_sym!r} at row={best_rc[0]} col={best_rc[1]} (score {best_score:.2f})")
+        global last_recovery
+        last_recovery = time.time()
         return True
     return False
 
@@ -437,3 +440,6 @@ def positions_to_fen(
         piece_placement = "/".join(rows)
 
     return f"{piece_placement} {turn} KQkq - 0 1"
+
+
+last_recovery = 0.0   # when a king was last synthesized (main.py saves a debug frame)

@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import QApplication
 
 from capture import capture_screen, list_monitors, monitor_containing
 from board_detector import detect_board
+import piece_recognizer
 from piece_recognizer import (
     recognize_board,
     positions_to_fen,
@@ -36,10 +37,11 @@ from elo_estimator import EloEstimator, blend_opponent_elo
 from move_selector import HumanMoveSelector
 from overlay import OverlayWindow, DebugBoardWindow
 from opponent_rating import read_opponent_rating, ocr_available
+import result_reader
 from result_reader import looks_like_game_over, read_game_result
 from think_time import read_clock
 from session import SessionGovernor
-from paths import SESSION_FILE, LOG_FILE, FROZEN
+from paths import SESSION_FILE, LOG_FILE, FROZEN, data_path
 from startpos import looks_like_start_position, white_on_top, start_layout
 from recorder import GameRecorder
 from stats import GameUploader
@@ -192,6 +194,7 @@ class ChessVision(QObject):
         self._result_next: float = 0.0
         self._result_last: tuple | None = None
         self._clock_announced: bool = False
+        self._debug_frames: int = 0   # game-over evidence saved this game
         # Consecutive accepted scans where chess.com's last-move highlight
         # disagrees with the tracked side to move
         self._turn_conflicts: int = 0
@@ -541,6 +544,21 @@ class ChessVision(QObject):
                 and self.last_fen_position is not None
                 and self.last_fen_position != STARTING_PLACEMENT)
 
+    def _save_debug_frame(self, screenshot, tag: str) -> None:
+        """Keep a few frames per game of the moments the result reader
+        cares about, so a missed result can be diagnosed from disk."""
+        if self._debug_frames >= 6:
+            return
+        self._debug_frames += 1
+        try:
+            d = data_path("debug")
+            os.makedirs(d, exist_ok=True)
+            path = os.path.join(d, f"{time.strftime('%Y%m%d_%H%M%S')}_{tag}.png")
+            cv2.imwrite(path, screenshot)
+            print(f"debug frame saved: {path}")
+        except Exception as e:
+            print(f"debug frame failed: {e}")
+
     def _maybe_read_result(self, screenshot, board) -> bool:
         """Resignations, flags, agreed draws and aborts never show on the
         board; chess.com announces them in a dialog over it. When that
@@ -563,6 +581,8 @@ class ChessVision(QObject):
         if now >= self._result_next:
             self._result_next = now + 1.0
             found = read_game_result(screenshot, board, self.player_color)
+            print(f"Game-over screen: OCR {result_reader.last_text[:140]!r} -> {found}")
+            self._save_debug_frame(screenshot, "gameover")
             if found is not None:
                 if found == self._result_last:
                     result, termination = found
@@ -585,6 +605,7 @@ class ChessVision(QObject):
         self._result_next = 0.0
         self._result_last = None
         self._clock_announced = False
+        self._debug_frames = 0
         self.elo_estimator.reset()
         self.last_fen_position = None
         self.current_turn = "w"
@@ -971,6 +992,9 @@ class ChessVision(QObject):
                               "y": self._cached_board["y"] - oy}
                     if self._maybe_read_result(screenshot, cached):
                         return
+                    if self._game_in_progress():
+                        print("Board lost mid-game (covered?) — saving frame")
+                        self._save_debug_frame(screenshot, "boardlost")
                 self._cached_board = None
                 self._capture_region = None  # fall back to full-screen grabs
                 self._last_cells = None
@@ -1056,6 +1080,9 @@ class ChessVision(QObject):
                 self._last_cells = cells
 
             positions = recognize_board(screenshot, board)
+            if (self._game_in_progress()
+                    and time.time() - piece_recognizer.last_recovery < 0.5):
+                self._save_debug_frame(screenshot, "kingrecovered")
 
             # Stale templates: the board plainly shows the starting position
             # (32 textured squares) but recognition doesn't read it as one,
@@ -1121,6 +1148,8 @@ class ChessVision(QObject):
                     missing = "white" if "K" not in fen_position else "black"
                     print(f"Waiting: {missing} king not recognized "
                           f"({self._king_miss_scans} scans) — {fen_position}")
+                    if self._game_in_progress():
+                        self._save_debug_frame(screenshot, "kingmiss")
                 self._status("Scan unclear — king not visible", ORANGE)
                 return
             self._king_miss_scans = 0

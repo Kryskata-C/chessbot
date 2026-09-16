@@ -118,8 +118,13 @@ def read_game_result(screenshot: np.ndarray, board: dict,
     gray = cv2.cvtColor(screenshot[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY)
     if gray.shape[1] < 900:
         gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+    global last_text
     try:
         text = _ocr(gray, 6)
     except Exception:
         return None
+    last_text = text or ""
     return parse_result(text, player_color)
+
+
+last_text = ""   # what the most recent read_game_result() OCR'd (for the log)
