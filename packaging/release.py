@@ -3,7 +3,7 @@
 changelog entry to the website, commit and tag.
 
     packaging/release.py 1.1.0                       # notes = commit subjects since the last tag
-    packaging/release.py 1.1.0 -n "Reads resignations" -n "Windows build"
+    packaging/release.py 1.1.0 -n "Headline: the detail" -n "Another headline: its detail"
     packaging/release.py 1.1.0 --no-build            # site entry + tag only (zip built elsewhere)
     packaging/release.py 1.1.0 --push                # also push both repos (tags included)
 
