@@ -37,6 +37,7 @@ from move_selector import HumanMoveSelector
 from overlay import OverlayWindow, DebugBoardWindow
 from opponent_rating import read_opponent_rating, ocr_available
 from result_reader import looks_like_game_over, read_game_result
+from think_time import read_clock
 from session import SessionGovernor
 from paths import SESSION_FILE, LOG_FILE, FROZEN
 from startpos import looks_like_start_position, white_on_top, start_layout
@@ -190,6 +191,7 @@ class ChessVision(QObject):
         # a result is accepted once two reads agree.
         self._result_next: float = 0.0
         self._result_last: tuple | None = None
+        self._clock_announced: bool = False
         # Consecutive accepted scans where chess.com's last-move highlight
         # disagrees with the tracked side to move
         self._turn_conflicts: int = 0
@@ -244,9 +246,12 @@ class ChessVision(QObject):
         elif op == "debug":
             self.debug_board.set_positions(**payload)
 
-    def _on_started(self, color: str, target_elo: int, visuals: dict):
+    def _on_started(self, color: str, target_elo: int, visuals: dict,
+                    time_control: str = "auto"):
         """Called when the user picks a color + strength + visuals and Starts."""
         self.visuals = visuals
+        self.move_selector.timer.set_control(time_control)
+        self._clock_announced = False
         self.overlay.set_visual_config(visuals)
         self._auto_color = color == "auto"
         self.player_color = None if self._auto_color else color
@@ -579,6 +584,7 @@ class ChessVision(QObject):
         self._opp_ocr_next = 0.0
         self._result_next = 0.0
         self._result_last = None
+        self._clock_announced = False
         self.elo_estimator.reset()
         self.last_fen_position = None
         self.current_turn = "w"
@@ -1328,6 +1334,7 @@ class ChessVision(QObject):
             self._last_analyzed_fen = fen
             print(f"FEN: {fen}  ({piece_count} pieces)")
 
+            self._read_own_clock(screenshot, board)
             chosen_move = self.move_selector.select_move(fen, piece_count)
             if chosen_move is None:
                 self._status("No legal moves found", ORANGE)
@@ -1345,6 +1352,30 @@ class ChessVision(QObject):
         except Exception as e:
             print(f"Scan error: {e}")
             self._status(f"Error: {e}", RED, duration_ms=5000)
+
+    def _read_own_clock(self, screenshot, board) -> None:
+        """Once per own turn: OCR our clock (bottom player row) so the
+        think timer paces to the real time left, and infer the time control
+        from the first read when the menu says to read it."""
+        if not self._visual_on("timing"):
+            return
+        timer = self.move_selector.timer
+        try:
+            secs = read_clock(screenshot, board, "bottom")
+        except Exception as e:
+            print(f"Clock read error: {e}")
+            return
+        if secs is None:
+            if not self._clock_announced and timer.moves == 0:
+                self._clock_announced = True
+                print(f"Clock not readable — think timer paces for {timer.label}")
+            return
+        inferred = timer.observe_clock(secs)
+        if inferred or not self._clock_announced:
+            self._clock_announced = True
+            m, sec = divmod(int(secs), 60)
+            print(f"Clock read: {m}:{sec:02d} — think timer paces for {timer.label}")
+            self._status(f"Clock {m}:{sec:02d} · pacing for {timer.label}", BLUE, duration_ms=3000)
 
     def _visual_on(self, key: str) -> bool:
         return self.visuals.get(key, True)

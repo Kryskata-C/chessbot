@@ -14,6 +14,7 @@ VISUALS = [
     ("trail", "Move trail"), ("evalbar", "Eval bar"), ("timing", "Think timer"),
 ]
 DEFAULT_OFF = {"pv", "candidates"}
+TIME_CONTROLS = ["auto", "1+0", "2+1", "3+0", "3+2", "5+0", "5+3", "10+0", "15+10", "30+0"]
 
 
 def strength_label(elo: int) -> str:
@@ -26,7 +27,7 @@ def strength_label(elo: int) -> str:
 
 
 class MenuWindow(Card):
-    started = pyqtSignal(str, int, dict)   # (color "w"/"b"/"auto", target_elo, visuals)
+    started = pyqtSignal(str, int, dict, str)   # (color "w"/"b"/"auto", target_elo, visuals, time control)
     sign_out = pyqtSignal()
 
     MIN_ELO, MAX_ELO, STEP = 400, 2800, 50
@@ -64,6 +65,19 @@ class MenuWindow(Card):
         hint = QLabel("Rating it imitates. It adapts to each opponent from here."); hint.setObjectName("dim")
         lay.addWidget(hint); lay.addSpacing(10)
 
+        lay.addWidget(section("Time control"))
+        tgrid = QGridLayout(); tgrid.setSpacing(6)
+        self._tc_group = QButtonGroup(self); self._tc_group.setExclusive(True)
+        self._tc_btns = {}
+        for i, key in enumerate(TIME_CONTROLS):
+            b = QPushButton("Read clock" if key == "auto" else key); b.setObjectName("pill"); b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._tc_group.addButton(b); self._tc_btns[key] = b; tgrid.addWidget(b, i // 5, i % 5)
+        self._tc_btns["auto"].setChecked(True)
+        lay.addLayout(tgrid)
+        thint = QLabel("Paces the think timer so the clock lasts. Read clock = infer it from your clock at move one."); thint.setObjectName("dim"); thint.setWordWrap(True)
+        lay.addWidget(thint); lay.addSpacing(10)
+
         lay.addWidget(section("Show on the board"))
         grid = QGridLayout(); grid.setSpacing(6)
         self._vis = {}
@@ -96,8 +110,11 @@ class MenuWindow(Card):
     def color(self) -> str:
         return next(k for k, b in self._color_btns.items() if b.isChecked())
 
+    def time_control(self) -> str:
+        return next(k for k, b in self._tc_btns.items() if b.isChecked())
+
     def _on_start(self):
         visuals = {k: b.isChecked() for k, b in self._vis.items()}
-        self.started.emit(self.color(), self.slider.value(), visuals)
+        self.started.emit(self.color(), self.slider.value(), visuals, self.time_control())
         self.hide()
 
