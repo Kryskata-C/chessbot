@@ -3,7 +3,7 @@
 changelog entry to the website, commit and tag.
 
     packaging/release.py 1.1.0                       # notes = commit subjects since the last tag
-    packaging/release.py 1.1.0 -n "Headline: the detail" -n "Another headline: its detail"
+    packaging/release.py 1.1.0 -n "new: Headline: the detail" -n "improved: Headline: detail" -n "fixed: ..."
     packaging/release.py 1.1.0 --no-build            # site entry + tag only (zip built elsewhere)
     packaging/release.py 1.1.0 --push                # also push both repos (tags included)
 
@@ -50,6 +50,17 @@ def last_tag() -> str | None:
         return sh("git", "describe", "--tags", "--abbrev=0", "--match", "v*", capture=True)
     except subprocess.CalledProcessError:
         return None
+
+
+def parse_note(text: str) -> dict:
+    """'kind: Title: detail' -> {kind, title, detail}. kind defaults to new,
+    detail may be empty. The site shows kind as a label, title bold."""
+    kind = "new"
+    m = re.match(r"^(new|improved|fixed)\s*:\s*(.+)$", text, re.I)
+    if m:
+        kind, text = m.group(1).lower(), m.group(2)
+    title, _, detail = text.partition(": ")
+    return {"kind": kind, "title": title.strip(), "detail": detail.strip()}
 
 
 def notes_from_git(since: str | None) -> list[str]:
@@ -146,7 +157,7 @@ def main() -> int:
 
     # 4. changelog entry
     entry = {"version": version, "date": dt.date.today().isoformat(),
-             "mac": mac_name, "win": win_name, "notes": notes}
+             "mac": mac_name, "win": win_name, "notes": [parse_note(n) for n in notes]}
     update_releases_js(os.path.join(site, "releases.js"), entry)
     print("releases.js updated")
 
@@ -154,7 +165,8 @@ def main() -> int:
     sh("git", "add", "releases.js", cwd=site)
     if sh("git", "status", "--porcelain", "releases.js", cwd=site, capture=True):
         sh("git", "commit", "-q", "-m", f"Release {version}", cwd=site)
-    sh("git", "tag", "-a", f"v{version}", "-m", f"Chess Vision {version}\n\n" + "\n".join(f"- {n}" for n in notes))
+    sh("git", "tag", "-a", f"v{version}", "-m", f"Chess Vision {version}\n\n"
+       + "\n".join(f"- {parse_note(n)['title']}" for n in notes))
     print(f"tagged v{version}")
     if a.push:
         sh("git", "push", "-q", "origin", "main", "--follow-tags")
