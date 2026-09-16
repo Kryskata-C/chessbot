@@ -420,10 +420,15 @@ shipped in `config.py` can't read anyone else's row. Sessions are remembered in 
 - Roles: `user` needs an active subscription; `friend` has unlimited access with no admin powers
   (shown in blue); `admin` has everything. Adding `friend` to an existing project: run
   `supabase/friend_role.sql` in the Supabase SQL editor.
-- Game history: every finished live game (and unfinished ones with moves, e.g. resignations the
-  board never shows) is uploaded to `public.games` by `stats.py`; the website dashboard shows
-  played / won / drawn / lost, accuracy and a recent-games table. One-time setup:
-  `supabase/games.sql` in the SQL editor.
+- Game history: every finished live game is uploaded to `public.games` by `stats.py`; the website
+  dashboard shows played / won / drawn / lost, accuracy and a recent-games table. One-time setup:
+  `supabase/games.sql` in the SQL editor (re-run it on an older project to add the `termination` column).
+- Result detection: checkmate, stalemate and material draws come from the board itself.
+  Resignations, flags, agreed draws, repetitions and aborts are read off chess.com's game-over
+  dialog with OCR (`result_reader.py`): when the dialog hides the board centre the app OCRs the
+  board area once a second and ends the game after two identical reads. The reason
+  (`termination`) goes into the PGN header, the games table and the website. To check what the
+  reader sees on a real game-over screen: `python debug_result.py w` (or `b`).
 - Training dashboard on the website: `python export_training.py` snapshots `selfplay_runs/` into
   `../chess-vision-site/training/` and regenerates `training.html` (admin-only tab). The tab goes
   live automatically when `dashboard.py` is running locally.
