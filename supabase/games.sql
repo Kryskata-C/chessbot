@@ -7,6 +7,7 @@ create table if not exists public.games (
   duration_s        integer,
   color             text check (color in ('w', 'b')),
   result            text not null default '*',            -- '1-0' | '0-1' | '1/2-1/2' | '*' (unfinished / not seen)
+  termination       text,                                 -- checkmate | resignation | timeout | agreement | stalemate | repetition | insufficient | fifty_moves | abandoned | aborted
   score             real,                                 -- 1 win, 0.5 draw, 0 loss, null unfinished
   plies             integer,
   target_elo        integer,
@@ -22,6 +23,9 @@ create table if not exists public.games (
   pgn               text,
   created_at        timestamptz not null default now()
 );
+-- Added after the first version of this table; harmless on a fresh one.
+alter table public.games add column if not exists termination text;
+
 create index if not exists games_user_played_idx on public.games (user_id, played_at desc);
 
 alter table public.games enable row level security;
