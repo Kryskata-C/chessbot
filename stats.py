@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-APP_VERSION = "1.0.0"
+from version import __version__ as APP_VERSION
 
 
 class GameUploader:
