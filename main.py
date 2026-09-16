@@ -36,6 +36,7 @@ from elo_estimator import EloEstimator, blend_opponent_elo
 from move_selector import HumanMoveSelector
 from overlay import OverlayWindow, DebugBoardWindow
 from opponent_rating import read_opponent_rating, ocr_available
+from result_reader import looks_like_game_over, read_game_result
 from session import SessionGovernor
 from paths import SESSION_FILE, LOG_FILE, FROZEN
 from startpos import looks_like_start_position, white_on_top, start_layout
@@ -185,6 +186,10 @@ class ChessVision(QObject):
         self._opp_rating_prior: int | None = None
         self._opp_ocr_tries: int = 0
         self._opp_ocr_next: float = 0.0
+        # Game-over dialog reader (result_reader.py): throttle + last read,
+        # a result is accepted once two reads agree.
+        self._result_next: float = 0.0
+        self._result_last: tuple | None = None
         # Consecutive accepted scans where chess.com's last-move highlight
         # disagrees with the tracked side to move
         self._turn_conflicts: int = 0
@@ -493,6 +498,76 @@ class ChessVision(QObject):
             "opp_estimate": self.elo_estimator.get_estimate(),
         }
 
+    def _end_game(self, result: str, termination: str | None, how: str) -> None:
+        """The game is over: record it, tell the governor, freeze scanning
+        until the next game shows up."""
+        self._game_over = True
+        self._status(f"Game over ({result}) — waiting for new game...", ORANGE)
+        self._gui("reset_visuals")
+        print(f"Game over detected {how}: {result}"
+              + (f" by {termination.replace('_', ' ')}" if termination else ""))
+        self.recorder.finish(result, termination)
+        score = None
+        if result in ("1-0", "0-1") and self.player_color:
+            score = 1.0 if (result == "1-0") == (self.player_color == "w") else 0.0
+        elif result == "1/2-1/2":
+            score = 0.5
+        if result != "*":
+            print("  " + self.governor.record_game(
+                self.move_selector.get_accuracy(),
+                self.move_selector.get_contested_cpl(), score))
+
+    @staticmethod
+    def _board_termination(board: chess.Board) -> str | None:
+        if board.is_checkmate():
+            return "checkmate"
+        if board.is_stalemate():
+            return "stalemate"
+        if board.is_insufficient_material():
+            return "insufficient"
+        if board.is_seventyfive_moves():
+            return "fifty_moves"
+        if board.is_fivefold_repetition():
+            return "repetition"
+        return None
+
+    def _game_in_progress(self) -> bool:
+        return (not self._game_over and self.player_color is not None
+                and self.last_fen_position is not None
+                and self.last_fen_position != STARTING_PLACEMENT)
+
+    def _maybe_read_result(self, screenshot, board) -> bool:
+        """Resignations, flags, agreed draws and aborts never show on the
+        board; chess.com announces them in a dialog over it. When that
+        dialog hides the board centre, OCR it (throttled) and end the game
+        once two reads agree. Returns True while the dialog is up so the
+        caller skips piece recognition on a frame that can't be read."""
+        if self._game_over:
+            # Already recorded; the dialog is still up. Keep the banner
+            # honest instead of complaining about unreadable kings.
+            if looks_like_game_over(screenshot, board):
+                self._status("Game over — waiting for new game...", ORANGE)
+                return True
+            return False
+        if not self._game_in_progress():
+            return False
+        if not looks_like_game_over(screenshot, board):
+            self._result_last = None
+            return False
+        now = time.time()
+        if now >= self._result_next:
+            self._result_next = now + 1.0
+            found = read_game_result(screenshot, board, self.player_color)
+            if found is not None:
+                if found == self._result_last:
+                    result, termination = found
+                    self._end_game(result, termination, "from the game-over screen")
+                    self.last_fen_position = None  # the final position was never seen
+                    return True
+                self._result_last = found
+        self._status("Game over screen — reading result...", ORANGE)
+        return True
+
     def _reset_game_state(self):
         """Reset all per-game state for a new game."""
         self.move_selector.session_temp_mult = self.governor.temp_mult
@@ -502,6 +577,8 @@ class ChessVision(QObject):
         self._opp_rating_prior = None
         self._opp_ocr_tries = 0
         self._opp_ocr_next = 0.0
+        self._result_next = 0.0
+        self._result_last = None
         self.elo_estimator.reset()
         self.last_fen_position = None
         self.current_turn = "w"
@@ -882,6 +959,12 @@ class ChessVision(QObject):
             board = detect_board(screenshot)
 
             if board is None:
+                if self._cached_board is not None:
+                    cached = {**self._cached_board,
+                              "x": self._cached_board["x"] - ox,
+                              "y": self._cached_board["y"] - oy}
+                    if self._maybe_read_result(screenshot, cached):
+                        return
                 self._cached_board = None
                 self._capture_region = None  # fall back to full-screen grabs
                 self._last_cells = None
@@ -939,6 +1022,11 @@ class ChessVision(QObject):
                 return
 
             self._maybe_read_opponent_rating(screenshot, board)
+
+            # The game-over dialog covers the board: read the result off it
+            # instead of trying to recognise pieces under it.
+            if self._maybe_read_result(screenshot, board):
+                return
 
             # Cheap change gate: compare per-square brightness against the
             # previous scan and skip the expensive template matching
@@ -1154,23 +1242,10 @@ class ChessVision(QObject):
                 except Exception:
                     pass
             if game_over_board is not None and game_over_board.is_game_over():
-                self._game_over = True
-                result = game_over_board.result()
-                self._status(
-                    f"Game over ({result}) — waiting for new game...", ORANGE
-                )
-                self._gui("reset_visuals")
                 self.last_fen_position = fen_position
-                print(f"Game over detected: {result}")
-                self.recorder.finish(result)
-                score = None
-                if result in ("1-0", "0-1") and self.player_color:
-                    score = 1.0 if (result == "1-0") == (self.player_color == "w") else 0.0
-                elif result == "1/2-1/2":
-                    score = 0.5
-                print("  " + self.governor.record_game(
-                    self.move_selector.get_accuracy(),
-                    self.move_selector.get_contested_cpl(), score))
+                self._end_game(game_over_board.result(),
+                               self._board_termination(game_over_board),
+                               "on the board")
                 return
 
             # Estimate opponent ELO when opponent just moved
