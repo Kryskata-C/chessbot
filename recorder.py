@@ -79,18 +79,22 @@ class GameRecorder:
         self._resyncs += 1
         self._emit(ev="resync", placement=fen_position, turn=turn)
 
-    def finish(self, result: str | None) -> None:
+    def finish(self, result: str | None, termination: str | None = None) -> None:
+        """`termination` says how it ended (checkmate, resignation, timeout,
+        agreement, stalemate, repetition, insufficient, fifty_moves,
+        abandoned, aborted) when known."""
         if self._f is None:
             return
-        self._emit(ev="end", result=result, moves=len(self._moves),
-                   resyncs=self._resyncs)
+        self._emit(ev="end", result=result, termination=termination,
+                   moves=len(self._moves), resyncs=self._resyncs)
         self._f.close()
         self._f = None
         self._meta["result"] = result
+        self._meta["termination"] = termination
         self._meta["ended"] = time.time()
         self._pgn = None
         try:
-            self._pgn = self._write_pgn(result)
+            self._pgn = self._write_pgn(result, termination)
         except Exception as e:
             print(f"PGN write failed: {e}")
         if self.on_finish is not None:
@@ -117,7 +121,7 @@ class GameRecorder:
                 print(f"game stats failed: {e}")
         return out
 
-    def _write_pgn(self, result: str | None) -> str:
+    def _write_pgn(self, result: str | None, termination: str | None = None) -> str:
         board = chess.Board()
         game = chess.pgn.Game()
         node = game
@@ -135,6 +139,8 @@ class GameRecorder:
         game.headers["White"] = me if colour == "w" else opp
         game.headers["Black"] = opp if colour == "w" else me
         game.headers["Result"] = result or "*"
+        if termination:
+            game.headers["Termination"] = termination.replace("_", " ")
         if self._resyncs:
             game.headers["Annotator"] = f"{self._resyncs} resync(s); moves may be incomplete"
         text = str(game)

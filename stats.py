@@ -41,6 +41,7 @@ class GameUploader:
             "duration_s": int(max(0, (s.get("ended") or time.time()) - started)),
             "color": s.get("color"),
             "result": s.get("result") or "*",
+            "termination": s.get("termination"),
             "score": s.get("score"),
             "plies": s.get("plies"),
             "target_elo": s.get("target_elo"),
