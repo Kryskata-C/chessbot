@@ -5,13 +5,13 @@
 # Needs: Python 3.11+ on PATH with `pip install -r requirements.txt pyinstaller`
 # (plus requirements-win-ocr.txt if you want the opponent-rating OCR).
 # Stockfish: set CV_STOCKFISH to a stockfish .exe, or it is downloaded from the
-# official GitHub release. The sse41-popcnt build runs on any x86-64 CPU from
-# the last ~15 years; swap in "avx2" for ~20% more speed on modern CPUs.
+# official GitHub release. Since Stockfish 19 the Windows download is one "universal" zip that
+# picks the fastest code path for the CPU at runtime.
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
 $Version = if ($env:CV_VERSION) { $env:CV_VERSION } else { (Select-String -Path "version.py" -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value }
 $Py = if ($env:CV_PYTHON) { $env:CV_PYTHON } else { "python" }
-$SfBuild = if ($env:CV_STOCKFISH_BUILD) { $env:CV_STOCKFISH_BUILD } else { "sse41-popcnt" }
+$SfBuild = if ($env:CV_STOCKFISH_BUILD) { $env:CV_STOCKFISH_BUILD } else { "universal" }
 
 # 1. Stage Stockfish.
 New-Item -ItemType Directory -Force -Path packaging\stage | Out-Null
