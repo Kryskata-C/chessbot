@@ -483,7 +483,7 @@ The v1 human layer is a hand-tuned generative model. The plan is to make each pi
 
 **📖 Opening book, properly.** Replace "engine + tight temperature" in the opening with a Polyglot book and popularity-weighted sampling, $P(m) \propto n_m^{1/\tau(E)}$, where $n_m$ is how often humans at rating $E$ actually play $m$. Lower ELO → hotter $\tau$ → more sidelines. Kills the last "why did it play a3" tells.
 
-**⏱ Thinking-time model.** Move latency conditioned on the position: $\log t \sim \mathcal{N}\big(\mu(c, \Delta, \text{phase}),\, \sigma^2\big)$ — fast in forcing positions, slow when criticality is low and the eval just swung. Currently moves are suggested instantly; timing is the biggest remaining tell for anyone watching a clock.
+**⏱ Thinking-time model** (`think_time.py`). The overlay's "wait Ns" badge is paced to the clock: the player's clock is read off chess.com with OCR at every turn (bottom player row), the time control is picked in the menu or inferred from the clock at move one (Read clock), and the remaining time is split over the moves still expected, minus a reserve. Each move's share is bent by the position — opening and obvious moves ×0.3, real decisions ×2.2, worse positions ×1.3, simple endgames ×0.6 — with log-normal jitter, and time trouble flattens everything towards premove speed. Simulated over 3,300 games (1+0 to 15+10, 40–70 moves) it never flags and typically leaves 5–20% of the clock.
 
 **📈 Bayesian opponent model.** The EMA on ACPL is a point estimate. Replace it with a posterior over $E_o$ — a normal-normal update per move with per-move variance from position complexity — so `conf` becomes real posterior width, and the edge $\varepsilon$ can be chosen against uncertainty rather than a fixed ramp.
 
