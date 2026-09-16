@@ -10,10 +10,13 @@ changelog entry to the website, commit and tag.
 What it does, in order:
   1. writes version.py, commits "Version X" in chessbot
   2. packaging/build_app.sh (unless --no-build) -> dist/ChessVision-X-arm64.zip
-  3. copies the zip into <site>/downloads/, deletes older Mac zips there
-  4. prepends the release to <site>/releases.js (version, date, files, notes);
-     a Windows zip for this version already in downloads/ is linked too
-  5. commits the site, tags chessbot vX (the tag also triggers the Windows CI build)
+  3. prepends the release to <site>/releases.js (version, date, download
+     URLs on GitHub Releases, notes)
+  4. commits the site, tags chessbot vX (the tag also triggers the Windows
+     CI build, which attaches its zip to the same GitHub release)
+  5. with --push: pushes both repos and creates the GitHub release with the Mac zip
+
+    packaging/release.py 1.1.0 --refresh            # later: pick up the Windows zip's URL
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+RELEASE_BASE = "https://github.com/Kryskata-C/chessbot/releases/download"
 
 
 def sh(*cmd, cwd=ROOT, capture=False) -> str:
@@ -101,9 +105,12 @@ def main() -> int:
     ap.add_argument("--site", default=os.path.join(ROOT, "..", "chess-vision-site"))
     ap.add_argument("--no-build", action="store_true", help="skip build_app.sh; use an existing dist zip if any")
     ap.add_argument("--push", action="store_true", help="push both repos and the tag")
+    ap.add_argument("--refresh", action="store_true", help="only re-read the GitHub release's assets into releases.js")
     a = ap.parse_args()
 
     version = a.version.lstrip("v")
+    if a.refresh:
+        return refresh(version, os.path.abspath(a.site))
     if not SEMVER.match(version):
         sys.exit(f"version must look like 1.2.3, got {a.version}")
     site = os.path.abspath(a.site)
@@ -139,25 +146,20 @@ def main() -> int:
         cands = glob.glob(os.path.join(ROOT, "dist", f"ChessVision-{version}-*.zip"))
         mac_zip = cands[0] if cands else None
 
-    # 3. publish the zip
-    dl = os.path.join(site, "downloads")
-    mac_name = None
+    # 3. publish the zip to GitHub Releases (the site links to it; the repo
+    #    is public so the asset URL needs no sign-in). The Windows CI build
+    #    attaches its zip to the same release from the v-tag.
+    mac_url = None
     if mac_zip:
-        mac_name = os.path.basename(mac_zip)
-        for old in glob.glob(os.path.join(dl, "ChessVision-*-arm64.zip")):
-            if os.path.basename(old) != mac_name:
-                os.remove(old)
-                print(f"removed old {os.path.basename(old)}")
-        shutil.copy2(mac_zip, os.path.join(dl, mac_name))
-        print(f"published {mac_name} ({os.path.getsize(mac_zip) / 1e6:.0f} MB)")
+        mac_url = f"{RELEASE_BASE}/v{version}/{os.path.basename(mac_zip)}"
+        print(f"Mac zip: {os.path.basename(mac_zip)} ({os.path.getsize(mac_zip) / 1e6:.0f} MB) -> {mac_url}")
     else:
         print("no Mac zip for this version (site entry will have no Mac download)")
-    win = os.path.join(dl, f"ChessVision-{version}-windows-x64.zip")
-    win_name = os.path.basename(win) if os.path.exists(win) else None
+    win_url = None  # filled in by `release.py refresh VERSION` once CI has uploaded it
 
     # 4. changelog entry
     entry = {"version": version, "date": dt.date.today().isoformat(),
-             "mac": mac_name, "win": win_name, "notes": [parse_note(n) for n in notes]}
+             "mac": mac_url, "win": win_url, "notes": [parse_note(n) for n in notes]}
     update_releases_js(os.path.join(site, "releases.js"), entry)
     print("releases.js updated")
 
@@ -172,8 +174,41 @@ def main() -> int:
         sh("git", "push", "-q", "origin", "main", "--follow-tags")
         sh("git", "push", "-q", "origin", "main", cwd=site)
         print("pushed both repos")
+        if mac_zip:
+            sh("gh", "release", "create", f"v{version}", mac_zip, "--title", f"Chess Vision {version}",
+               "--notes", "\n".join(f"- {parse_note(n)['title']}" for n in notes))
+            print(f"GitHub release v{version} created with the Mac zip")
     else:
-        print("next: git push origin main --follow-tags   (and push the site)")
+        print("next: git push origin main --follow-tags, push the site, then\n"
+              f"      gh release create v{version} {mac_zip} --title 'Chess Vision {version}' --notes-from-tag")
+    return 0
+
+
+def refresh(version: str, site: str) -> int:
+    """Point releases.js at whatever assets the GitHub release has now
+    (run after the Windows CI build attached its zip)."""
+    out = sh("gh", "release", "view", f"v{version}", "--json", "assets", capture=True)
+    names = [a_["name"] for a_ in json.loads(out)["assets"]]
+    path = os.path.join(site, "releases.js")
+    text = open(path).read()
+    m = re.search(r"window\.CV_RELEASES\s*=\s*(\[.*?\]);", text, re.S)
+    releases = json.loads(m.group(1))
+    for r in releases:
+        if r["version"] != version:
+            continue
+        for key, pat in (("mac", "arm64"), ("win", "windows")):
+            hit = next((n for n in names if pat in n), None)
+            r[key] = f"{RELEASE_BASE}/v{version}/{hit}" if hit else None
+            print(f"{key}: {r[key] or 'no asset'}")
+    text = text[:m.start(1)] + json.dumps(releases, indent=2, ensure_ascii=False) + text[m.end(1):]
+    open(path, "w").write(text)
+    sh("git", "add", "releases.js", cwd=site)
+    if sh("git", "status", "--porcelain", "releases.js", cwd=site, capture=True):
+        sh("git", "commit", "-q", "-m", f"Release {version}: download links", cwd=site)
+        sh("git", "push", "-q", "origin", "main", cwd=site)
+        print("site updated and pushed")
+    else:
+        print("releases.js already current")
     return 0
 
 
