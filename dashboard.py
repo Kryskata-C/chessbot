@@ -77,7 +77,17 @@ class Handler(SimpleHTTPRequestHandler):
     def end_headers(self):
         # the website's Training tab (any origin) may read this local-only server
         self.send_header("Access-Control-Allow-Origin", "*")
+        # Chrome treats a fetch from the deployed (https) site to a server
+        # on this Mac as a local-network request and preflights it
+        self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
         super().end_headers()
+
+    def do_OPTIONS(self):  # CORS / private-network preflight
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _json(self, obj):
         body = json.dumps(obj).encode()
