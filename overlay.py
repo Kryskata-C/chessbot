@@ -8,9 +8,9 @@ import time
 from typing import Optional
 
 import native
-from PyQt6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QPoint
+from PyQt6.QtCore import Qt, QRect, QRectF, QPointF, QTimer, QPoint, pyqtSignal
 from PyQt6.QtGui import QPainter, QColor, QPen, QFont, QFontMetrics, QPolygonF
-from PyQt6.QtWidgets import QWidget, QApplication
+from PyQt6.QtWidgets import QWidget, QApplication, QPushButton
 
 
 PIECE_UNICODE = {
@@ -27,9 +27,14 @@ def exclude_from_screen_capture(widget) -> None:
 
 
 class DebugBoardWindow(QWidget):
-    """Small always-on-top window showing what pieces the scanner detects."""
+    """Small always-on-top window showing what pieces the scanner detects,
+    with a Stop button that ends the session and returns to the setup card."""
+
+    stop_requested = pyqtSignal()
 
     SQUARE_PX = 40  # size of each square in the debug board
+    INFO_PX = 86    # info text + ELO + accuracy + bot ELO lines
+    BUTTON_PX = 44  # stop button row
 
     def __init__(self):
         super().__init__()
@@ -47,13 +52,26 @@ class DebugBoardWindow(QWidget):
         self.bot_realized_elo: int | None = None
 
         size = self.SQUARE_PX * 8 + 40  # board + margins for labels
-        self.setFixedSize(size, size + 86)  # extra space for info text + ELO + accuracy + bot ELO
+        self.setFixedSize(size, size + self.INFO_PX + self.BUTTON_PX)
         self.setWindowTitle("Debug Board")
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
         )
         self.setStyleSheet("background: #1e1e1e;")
+
+        self.stop_btn = QPushButton("Stop game", self)
+        self.stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stop_btn.setToolTip("Stop scanning and go back to the setup card")
+        self.stop_btn.setStyleSheet(
+            "QPushButton { background: #2a2620; color: #ef6b5a; border: 1px solid #3d2f2b;"
+            " border-radius: 8px; font-family: Helvetica Neue, Helvetica, Arial;"
+            " font-size: 12px; font-weight: 600; }"
+            "QPushButton:hover { background: #3a2a27; border-color: #ef6b5a; }"
+            "QPushButton:pressed { background: #ef6b5a; color: #0e0d0b; }"
+        )
+        self.stop_btn.setGeometry(20, size + self.INFO_PX + 4, size - 40, 30)
+        self.stop_btn.clicked.connect(self.stop_requested.emit)
 
         # Position in top-right area of screen
         screen = QApplication.primaryScreen()

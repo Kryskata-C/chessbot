@@ -138,6 +138,10 @@ class ChessVision(QObject):
         self.target_elo: int = HumanMoveSelector.DEFAULT_TARGET_ELO
         self.current_turn: str = "w"  # white always moves first
         self.running = True
+        # A scanning session runs from Start until Stop / game over; the
+        # counter lets a delayed "back to menu" ignore a session it outlived
+        self._scanning = False
+        self._session_id = 0
         self.has_templates = len(get_templates()) > 0
         self.elo_estimator = EloEstimator()
         self._scan_thread: threading.Thread | None = None
@@ -208,8 +212,9 @@ class ChessVision(QObject):
         self.visuals: dict = {}
         self._new_enemy_move: chess.Move | None = None
 
-        # Wire up menu → start, and worker thread → GUI updates
+        # Wire up menu → start, Stop button → menu, worker thread → GUI updates
         self.menu.started.connect(self._on_started)
+        self.debug_board.stop_requested.connect(self._on_stop_clicked)
         self.sig_gui.connect(self._apply_gui)
 
     def _gui(self, op: str, payload: dict | None = None):
@@ -248,10 +253,19 @@ class ChessVision(QObject):
             self.overlay.reset_board_visuals()
         elif op == "debug":
             self.debug_board.set_positions(**payload)
+        elif op == "game_ended":
+            # Leave the result banner up for a moment, then back to setup
+            self.menu.set_note(payload["note"])
+            sid = self._session_id
+            QTimer.singleShot(2000, lambda: self._stop_game(sid))
 
     def _on_started(self, color: str, target_elo: int, visuals: dict,
                     time_control: str = "auto"):
         """Called when the user picks a color + strength + visuals and Starts."""
+        if self._scanning:
+            self._stop_game()
+        self._session_id += 1
+        self._scanning = True
         self.visuals = visuals
         self.move_selector.timer.set_control(time_control)
         self._clock_announced = False
@@ -303,7 +317,7 @@ class ChessVision(QObject):
 
     def _capture_tick(self):
         """GUI thread: grab a frame (board region when known) for the worker."""
-        if not self.running:
+        if not self.running or not self._scanning:
             return
         region = self._capture_region
         full_grab = region is None
@@ -328,7 +342,7 @@ class ChessVision(QObject):
         If analysis takes longer than the capture interval, intermediate
         frames are simply replaced — the worker always sees the latest.
         """
-        while self.running:
+        while self.running and self._scanning:
             if not self._frame_ready.wait(timeout=1.0):
                 continue
             self._frame_ready.clear()
@@ -510,11 +524,12 @@ class ChessVision(QObject):
         """The game is over: record it, tell the governor, freeze scanning
         until the next game shows up."""
         self._game_over = True
-        self._status(f"Game over ({result}) — waiting for new game...", ORANGE)
+        by = f" by {termination.replace('_', ' ')}" if termination else ""
+        self._status(f"Game over ({result}{by}) — back to setup...", ORANGE)
         self._gui("reset_visuals")
-        print(f"Game over detected {how}: {result}"
-              + (f" by {termination.replace('_', ' ')}" if termination else ""))
+        print(f"Game over detected {how}: {result}{by}")
         self.recorder.finish(result, termination)
+        self._gui("game_ended", {"note": f"Last game: {result}{by}. Set up the next one."})
         score = None
         if result in ("1-0", "0-1") and self.player_color:
             score = 1.0 if (result == "1-0") == (self.player_color == "w") else 0.0
@@ -1477,8 +1492,62 @@ class ChessVision(QObject):
             white_cp = best_eval if self.player_color == "w" else -best_eval
             self._gui("eval", {"cp": white_cp})
 
+    def _on_stop_clicked(self):
+        """Stop button on the pieces window."""
+        if not self._game_over:
+            self.menu.set_note("Scanning stopped. Set up the next game.")
+        self._stop_game()
+
+    def _stop_game(self, session_id: int | None = None):
+        """End the scanning session and return to the setup card: stop
+        capture and the worker, keep a game we left mid-way, forget the
+        board so the next Start finds it afresh. `session_id` lets a
+        delayed call skip a session that has already been replaced."""
+        if not self._scanning:
+            return
+        if session_id is not None and session_id != self._session_id:
+            return
+        self._scanning = False
+        if self._capture_timer is not None:
+            self._capture_timer.stop()
+            self._capture_timer = None
+        self._frame_ready.set()  # unblock the worker so it can exit
+        if self._scan_thread is not None:
+            self._scan_thread.join(timeout=3.0)
+            if self._scan_thread.is_alive():
+                print("Scan worker still busy — letting it finish in the background")
+            self._scan_thread = None
+        self.recorder.finish(None)  # a game stopped mid-way is kept
+        self._reset_game_state()
+        self._forget_board()
+        self.overlay.clear_highlights()
+        self.overlay.hide()
+        self.debug_board.hide()
+        self.menu.show()
+        self.menu.raise_()
+        self.menu.activateWindow()
+        print("Scanning stopped — back to setup.")
+
+    def _forget_board(self):
+        """Drop everything tied to where the board was and who we are, so
+        the next session re-detects the board, display and colour."""
+        self._capture_region = None
+        self._cached_board = None
+        self._last_cells = None
+        self._board_misses = 0
+        self._pending_fen = None
+        self._pending_count = 0
+        self._stale_scans = 0
+        self._color_guess = None
+        self._color_votes = 0
+        self.player_color = None
+        with self._frame_lock:
+            self._latest_frame = None
+        self._frame_ready.clear()
+
     def stop(self):
         self.running = False
+        self._scanning = False
         self.recorder.finish(None)  # keep a partial game if we quit mid-way
         self._frame_ready.set()  # unblock the worker so it can exit
         if self._capture_timer is not None:

@@ -31,13 +31,14 @@ class MenuWindow(Card):
     sign_out = pyqtSignal()
 
     MIN_ELO, MAX_ELO, STEP = 400, 2800, 50
+    DEFAULT_NOTE = "Set up the game, then start scanning."
 
     def __init__(self):
         super().__init__(width=420, on_close=QApplication.quit)
         lay = QVBoxLayout(self); lay.setContentsMargins(28, 24, 28, 22); lay.setSpacing(10)
         lay.addWidget(self.header())
-        tag = QLabel("Set up the game, then start scanning."); tag.setObjectName("dim")
-        lay.addWidget(tag); lay.addSpacing(8)
+        self.tag = QLabel(self.DEFAULT_NOTE); self.tag.setObjectName("dim"); self.tag.setWordWrap(True)
+        lay.addWidget(self.tag); lay.addSpacing(8)
 
         lay.addWidget(section("Play as"))
         row = QHBoxLayout(); row.setSpacing(8)
@@ -97,6 +98,10 @@ class MenuWindow(Card):
         out.clicked.connect(self.sign_out.emit)
         foot.addWidget(self.account_label); foot.addStretch(); foot.addWidget(out)
         lay.addLayout(foot)
+
+    def set_note(self, text: str | None = None) -> None:
+        """Line under the wordmark: why we're back here (game over, stopped)."""
+        self.tag.setText(text or self.DEFAULT_NOTE)
 
     def set_account(self, email: str, status: str = "") -> None:
         self.account_label.setText(f"{email}  ·  {status}" if status else email)
