@@ -35,9 +35,23 @@ if ($env:CV_STOCKFISH -and (Test-Path $env:CV_STOCKFISH)) {
 } else {
     Write-Host "Stockfish: $Stage (already staged)"
 }
-# Smoke-test the engine binary on this machine.
-$uci = "uci`nquit`n" | & $Stage
-if (-not ($uci -match "uciok")) { throw "staged Stockfish does not answer uci" }
+# Smoke-test the engine binary the way the app drives it (a subprocess
+# with piped stdin); print what it said so a broken binary is diagnosable.
+$Check = @'
+import subprocess, sys
+exe = sys.argv[1]
+try:
+    p = subprocess.run([exe], input=b"uci\nquit\n", capture_output=True, timeout=60)
+except Exception as e:
+    print("engine failed to start:", e); sys.exit(1)
+out = p.stdout.decode(errors="replace"); err = p.stderr.decode(errors="replace")
+print("exit", p.returncode, "| stdout tail:", out[-300:].strip(), "| stderr:", err.strip()[:300])
+sys.exit(0 if "uciok" in out else 1)
+'@
+$CheckFile = Join-Path $env:TEMP "cv-uci-check.py"
+Set-Content -Path $CheckFile -Value $Check
+& $Py $CheckFile $Stage
+if ($LASTEXITCODE -ne 0) { throw "staged Stockfish does not answer uci" }
 
 # 2. Icon (only if missing; assets/ChessVision.ico is committed).
 if (-not (Test-Path assets\ChessVision.ico)) {
