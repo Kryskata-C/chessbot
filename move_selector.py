@@ -214,6 +214,8 @@ class HumanMoveSelector:
         # not). Loss is recorded as 0: a slower mate is not an error.
         if best_eval >= _MATE_CP:
             mating = [m for m in top_moves if m["eval"] >= _MATE_CP]
+            mating = self._prefer_quiet_mates(board, mating)
+            best_eval = mating[0]["eval"]
             mate_in = max(1, round((100000 - best_eval) / 100))
             pool = list(mating)
             # Q+R vs K took 16 moves from mate-in-13 with a flat temp of
@@ -245,6 +247,7 @@ class HumanMoveSelector:
             self._record(top_moves, chosen, 0)
             self._run_controller()
             self._log(chosen, top_moves, 0, mate_temp, False, cushion)
+            self._remember_placement(board, chosen)
             return chosen
 
         # Decisive material (a piece up in a bare endgame, or +15): every
@@ -263,6 +266,7 @@ class HumanMoveSelector:
             self._record(top_moves, chosen, loss)
             self._run_controller()
             self._log(chosen, top_moves, loss, 60.0, False, cushion)
+            self._remember_placement(board, chosen)
             return chosen
 
         # How far this position is even allowed to deviate. Forcing positions
@@ -325,19 +329,7 @@ class HumanMoveSelector:
         self._record(top_moves, chosen, loss)
         self._run_controller()
         self._log(chosen, top_moves, loss, temperature, coasting, cushion)
-        # Remember the position our move creates, so later turns can steer
-        # away from recreating it (repetition = draw = wasted edge).
-        if board is not None:
-            try:
-                mv = chess.Move.from_uci(chosen)
-                if mv in board.legal_moves:
-                    board.push(mv)
-                    key = board.board_fen()
-                    board.pop()
-                    self._seen_placements[key] = \
-                        self._seen_placements.get(key, 0) + 1
-            except ValueError:
-                pass
+        self._remember_placement(board, chosen)
         return chosen
 
     def _book_choice(self, board: chess.Board | None, top_moves: list[dict],
@@ -836,6 +828,40 @@ class HumanMoveSelector:
         board.pop()
         return gain - lost
 
+    def _prefer_quiet_mates(
+        self, board: chess.Board | None, mating: list[dict]
+    ) -> list[dict]:
+        """A forced mate that opens with a queen or rook sacrifice is what
+        chess.com calls brilliant (live game 2026-09-17: 36...Qh1+ Bxh1
+        Rg1#, with the quiet Qxf4+ mating in 4). A club player who sees a
+        mate at all usually sees the plain one, so when a non-sacrificing
+        mate exists within a few moves of the fastest, the sacrificial
+        lines are dropped — unless this level has sacrifice vision."""
+        if board is None or len(mating) < 2:
+            return mating
+        if random.random() < self._sacrifice_vision():
+            return mating
+
+        def mate_len(m: dict) -> int:
+            return max(1, round((100000 - m["eval"]) / 100))
+
+        nets: dict[str, int] = {}
+        for m in mating:
+            try:
+                mv = chess.Move.from_uci(m["move"])
+            except ValueError:
+                continue
+            if mv in board.legal_moves:
+                nets[m["move"]] = self._move_material_net(board, mv)
+        quiet = [m for m in mating if nets.get(m["move"], 0) > _SAC_NET]
+        if not quiet or quiet[0] is mating[0]:
+            return mating
+        if mate_len(quiet[0]) - mate_len(mating[0]) > 4:
+            return mating  # the plain mate is far slower: the sac is the find
+        print(f"  [sac] mate in {mate_len(mating[0])} by {mating[0]['move']} gives up "
+              f"material — playing the plain mate in {mate_len(quiet[0])} instead")
+        return quiet
+
     def _filter_sacrifices(
         self, board: chess.Board | None, top_moves: list[dict]
     ) -> list[dict]:
@@ -1043,6 +1069,25 @@ class HumanMoveSelector:
         if move.from_square == last.to_square and penalty == 0.0:
             penalty -= 0.35
         return penalty
+
+    def _remember_placement(self, board: chess.Board | None, chosen: str) -> None:
+        """Remember the position our move creates, so later turns can steer
+        away from recreating it (repetition = draw = wasted edge). Called
+        from every selection path — the mate and decisive-material modes
+        used to return early without it, so won endgames shuffled into
+        threefold repetition (two K+B+P stress games, 2026-09-17)."""
+        if board is None:
+            return
+        try:
+            mv = chess.Move.from_uci(chosen)
+        except ValueError:
+            return
+        if mv not in board.legal_moves:
+            return
+        board.push(mv)
+        key = board.board_fen()
+        board.pop()
+        self._seen_placements[key] = self._seen_placements.get(key, 0) + 1
 
     def _repetition_penalty(
         self, board: chess.Board | None, uci: str, best_eval: int
