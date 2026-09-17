@@ -177,8 +177,11 @@ class HumanMoveSelector:
         # visible, and few pieces make it cheap.
         # (Depth 22 with 10 candidate lines took 40s in K+R vs K — MultiPV
         # keeps searching every line to depth; 18 is ~0.1-0.7s there.)
-        depth = 18 if piece_count <= 8 else 16 if piece_count <= 14 else None
-        top_moves = self.engine.get_top_moves(fen, self._num_candidates(), depth=depth)
+        # Node budgets, not fixed depths: depth 18 x 12 lines took 30-280s
+        # per move in K+N+P endings (endgame stress 2026-09-17), and the
+        # live app would stall the same way. 12M nodes is ~2s.
+        nodes = 12_000_000 if piece_count <= 8 else 8_000_000 if piece_count <= 14 else None
+        top_moves = self.engine.get_top_moves(fen, self._num_candidates(), nodes=nodes)
         if not top_moves:
             self.last_top_moves = []
             self.last_criticality = 0.0

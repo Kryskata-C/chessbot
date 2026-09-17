@@ -96,15 +96,20 @@ class ChessEngine:
                     self.engine.set_depth(self.depth)
         return self._safe_call(_call, fallback=None)
 
-    def get_top_moves(self, fen: str, n: int = 5, depth: int | None = None) -> list[dict]:
+    def get_top_moves(self, fen: str, n: int = 5, depth: int | None = None,
+                      nodes: int | None = None) -> list[dict]:
         """Get the top N moves with evaluations for the given position.
-        `depth` overrides the default for this call (thin endgames are
-        cheap to search deeper, and depth 12 sees no conversion plan)."""
+        `depth` overrides the default for this call; `nodes` searches to a
+        node budget instead (thin endgames: a fixed depth 18 with a dozen
+        lines took 30-280s per move in K+N+P endings, while 12M nodes is
+        ~2s and reaches depth 30+ wherever the position is simple)."""
         if not self._fen_ok(fen):
             print(f"Rejecting FEN without both kings: {fen}")
             return []
         def _call():
             self.engine.set_fen_position(fen)
+            if nodes:
+                return self._parse_top(self.engine.get_top_moves(n, num_nodes=nodes))
             if depth is not None and depth != self.depth:
                 self.engine.set_depth(depth)
             try:
@@ -112,20 +117,24 @@ class ChessEngine:
             finally:
                 if depth is not None and depth != self.depth:
                     self.engine.set_depth(self.depth)
-            result = []
-            for m in raw:
-                if m.get("Mate") is not None:
-                    # Keep mate distance in the score: mate-in-2 must beat
-                    # mate-in-8, or a selector choosing among "equal" mates
-                    # shuffles plans forever and repetition-draws won games.
-                    n_mate = min(abs(m["Mate"]), 99)
-                    eval_cp = (100000 - 100 * n_mate if m["Mate"] > 0
-                               else -100000 + 100 * n_mate)
-                else:
-                    eval_cp = m.get("Centipawn", 0)
-                result.append({"move": m["Move"], "eval": eval_cp})
-            return result
+            return self._parse_top(raw)
         return self._safe_call(_call, fallback=[])
+
+    @staticmethod
+    def _parse_top(raw) -> list[dict]:
+        result = []
+        for m in raw:
+            if m.get("Mate") is not None:
+                # Keep mate distance in the score: mate-in-2 must beat
+                # mate-in-8, or a selector choosing among "equal" mates
+                # shuffles plans forever and repetition-draws won games.
+                n_mate = min(abs(m["Mate"]), 99)
+                eval_cp = (100000 - 100 * n_mate if m["Mate"] > 0
+                           else -100000 + 100 * n_mate)
+            else:
+                eval_cp = m.get("Centipawn", 0)
+            result.append({"move": m["Move"], "eval": eval_cp})
+        return result
 
     def get_evaluation(self, fen: str, depth: int = 10) -> int:
         """Evaluate a position and return score in centipawns from side-to-move POV."""
