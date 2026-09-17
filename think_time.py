@@ -130,10 +130,13 @@ class ThinkTimer:
 
     # ---- the model -----------------------------------------------------
     def suggest(self, crit: float, loss: float, move_number: int,
-                piece_count: int, under_pressure: bool, near_equal: bool) -> float:
+                piece_count: int, under_pressure: bool,
+                near_equal: bool = False) -> float:
         """Seconds to wait before playing. `crit` is the move selector's
         criticality (1 = one obvious move), `loss` the chosen move's
-        centipawn loss versus the best, `move_number` our move count."""
+        centipawn loss versus the best, `move_number` our move count.
+        The whole think, counted from the opponent's move: the caller
+        subtracts what recognition and analysis already used up."""
         base, inc = self.base or 0, self.inc or 0
         if not base:
             base, inc = TIME_CONTROLS[FALLBACK]
@@ -149,33 +152,38 @@ class ThinkTimer:
         reserve = min(0.12 * base, 15.0)
         share = max(0.0, remaining - reserve) / moves_left + 0.8 * inc
 
-        # Position: what kind of move is this?
-        if move_number < 8:
-            mult = 0.35          # opening: familiar territory
+        # Position: what kind of move is this? Long thinks belong to real
+        # decisions between a couple of candidates. When several moves are
+        # about equally good (crit ~ 0) any of them will do and people play
+        # on; when one move is clearly best it is usually obvious too.
+        if move_number < 8 or piece_count >= 30:
+            mult = 0.3           # opening / nothing traded yet: familiar
         elif crit >= 0.6:
             mult = 0.3           # one obvious move (recapture, only move)
         elif loss >= 60:
-            mult = 0.55          # slips happen when moving fast
+            mult = 0.5           # slips happen when moving fast
         elif crit < 0.15:
-            mult = 2.2           # several playable moves: a real decision
+            mult = 0.7           # several playable moves: no reason to sit
         else:
-            mult = 1.0
+            mult = 1.0           # a real choice
+        real_decision = mult >= 1.0
         if under_pressure:
             mult *= 1.3          # worse positions get more thought
         if piece_count <= 10:
             mult *= 0.6          # simple endgames go quicker
-        if near_equal:
-            mult *= 1.2          # two near-equal options
+        if real_decision and not bullet and random.random() < 0.08:
+            mult *= 2.0          # the occasional genuine long think
 
         # Time trouble: everyone speeds up, long thinks disappear.
         low = remaining < max(20.0, 0.1 * base)
         if low:
-            mult = min(mult, 1.1)
+            mult = min(mult, 1.0)
             share = remaining / max(10.0, moves_left * 0.6) + 0.8 * inc
 
-        seconds = share * mult * math.exp(random.gauss(0.0, 0.25 if bullet else 0.35))
+        seconds = share * mult * math.exp(random.gauss(0.0, 0.25 if bullet else 0.3))
         floor = 0.4 if bullet else 0.6
-        cap = min(max(share * 4.0, floor), 0.2 * remaining + inc, 60.0 if base >= 600 else 45.0)
+        hard_cap = 45.0 if base >= 900 else 30.0 if base >= 300 else 15.0
+        cap = min(max(share * 2.5, floor), 0.1 * remaining + inc, hard_cap)
         seconds = max(floor, min(cap, seconds))
         if remaining < 10:
             # Seconds left: premove territory, whatever the position.

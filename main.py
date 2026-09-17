@@ -211,6 +211,9 @@ class ChessVision(QObject):
         # Visual effect toggles (menu can override) and enemy-move capture
         self.visuals: dict = {}
         self._new_enemy_move: chess.Move | None = None
+        # When the tracked game last handed the move to us: the think
+        # timer counts from there, not from when analysis finished
+        self._turn_started: float | None = None
 
         # Wire up menu → start, Stop button → menu, worker thread → GUI updates
         self.menu.started.connect(self._on_started)
@@ -631,6 +634,7 @@ class ChessVision(QObject):
         self.game_board = None
         self._last_analyzed_fen = None
         self._new_enemy_move = None
+        self._turn_started = None
         self._gui("reset_visuals")
         print("Game state reset for new game.")
 
@@ -857,6 +861,8 @@ class ChessVision(QObject):
             print(f"Tracked: {' '.join(m.uci() for m in moves)}")
             self.recorder.moves(b, moves, self.player_color)
             self.current_turn = "w" if b.turn == chess.WHITE else "b"
+            if self.current_turn == self.player_color:
+                self._turn_started = time.time()
             return
 
         # Takeback? (user pressed undo) — walk back through our own history
@@ -1464,6 +1470,12 @@ class ChessVision(QObject):
                 think_s = self.move_selector.suggest_think_time(
                     chosen_move, len(pc) or 32
                 )
+                # The human's think started when the opponent moved;
+                # recognition and analysis have already used some of it.
+                if self._turn_started is not None:
+                    elapsed = time.time() - self._turn_started
+                    think_s = max(0.3, think_s - elapsed)
+                self._turn_started = None
             except Exception as e:
                 print(f"Think-time hint error: {e}")
             self._last_think_s = think_s
