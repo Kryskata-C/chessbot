@@ -157,33 +157,33 @@ class ThinkTimer:
         # about equally good (crit ~ 0) any of them will do and people play
         # on; when one move is clearly best it is usually obvious too.
         if move_number < 8 or piece_count >= 30:
-            mult = 0.25          # opening / nothing traded yet: familiar
+            mult = 0.3           # opening / nothing traded yet: familiar
         elif crit >= 0.6:
-            mult = 0.25          # one obvious move (recapture, only move)
+            mult = 0.3           # one obvious move (recapture, only move)
         elif loss >= 60:
-            mult = 0.4           # slips happen when moving fast
+            mult = 0.5           # slips happen when moving fast
         elif crit < 0.15:
-            mult = 0.5           # several playable moves: no reason to sit
+            mult = 0.7           # several playable moves: no reason to sit
         else:
-            mult = 0.8           # a real choice
-        real_decision = mult >= 0.8
+            mult = 1.0           # a real choice
+        real_decision = mult >= 1.0
         if under_pressure:
             mult *= 1.3          # worse positions get more thought
         if piece_count <= 10:
             mult *= 0.6          # simple endgames go quicker
-        if real_decision and not bullet and random.random() < 0.05:
-            mult *= 1.8          # the occasional genuine long think
+        if real_decision and not bullet and random.random() < 0.08:
+            mult *= 2.0          # the occasional genuine long think
 
         # Time trouble: everyone speeds up, long thinks disappear.
         low = remaining < max(20.0, 0.1 * base)
         if low:
-            mult = min(mult, 0.8)
+            mult = min(mult, 1.0)
             share = remaining / max(10.0, moves_left * 0.6) + 0.8 * inc
 
         seconds = share * mult * math.exp(random.gauss(0.0, 0.25 if bullet else 0.3))
         floor = 0.4 if bullet else 0.6
-        hard_cap = 35.0 if base >= 900 else 25.0 if base >= 300 else 12.0
-        cap = min(max(share * 2.0, floor), 0.08 * remaining + inc, hard_cap)
+        hard_cap = 45.0 if base >= 900 else 30.0 if base >= 300 else 15.0
+        cap = min(max(share * 2.5, floor), 0.1 * remaining + inc, hard_cap)
         seconds = max(floor, min(cap, seconds))
         if remaining < 10:
             # Seconds left: premove territory, whatever the position.
