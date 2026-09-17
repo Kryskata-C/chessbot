@@ -41,20 +41,22 @@ NAV = """<div style="position: relative; background: #0e0d0b; color: #efe9dd; mi
 DATA_LAYER = """
 /* ---------- data source: live dashboard.py if it is running, else the exported snapshot ---------- */
 const LIVE_BASE = "http://127.0.0.1:8765";
+// https page -> local http server: Chrome needs the target address space declared (Local Network Access)
+const LIVE_OPTS = { cache: "no-store", targetAddressSpace: "loopback" };
 const SNAPSHOT = "training/data";
 const src = { live: null, cache: {} };
 async function detectLive() {
-  try { const r = await fetch(LIVE_BASE + "/api/runs", { cache: "no-store" }); if (r.ok) { src.live = true; return; } } catch (e) {}
+  try { const r = await fetch(LIVE_BASE + "/api/runs", LIVE_OPTS); if (r.ok) { src.live = true; return; } } catch (e) {}
   src.live = false;
 }
 async function apiRuns() {
   if (src.live === null) await detectLive();
-  if (src.live) return (await fetch(LIVE_BASE + "/api/runs", { cache: "no-store" })).json();
+  if (src.live) return (await fetch(LIVE_BASE + "/api/runs", LIVE_OPTS)).json();
   if (!src.cache.runs) src.cache.runs = (await fetch(SNAPSHOT + "/runs.json")).json();
   return src.cache.runs;
 }
 async function apiRun(id, from) {
-  if (src.live) return (await fetch(`${LIVE_BASE}/api/run?id=${encodeURIComponent(id)}&from=${from}`, { cache: "no-store" })).json();
+  if (src.live) return (await fetch(`${LIVE_BASE}/api/run?id=${encodeURIComponent(id)}&from=${from}`, LIVE_OPTS)).json();
   if (!src.cache[id]) src.cache[id] = (await fetch(`${SNAPSHOT}/${encodeURIComponent(id)}.json`)).json();
   const all = (await src.cache[id]).events;
   return { events: all.slice(from), next: all.length };
