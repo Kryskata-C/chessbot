@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = os.path.dirname(os.path.abspath(__file__))
 RUNS = os.path.join(ROOT, "selfplay_runs")
 STATIC = os.path.join(ROOT, "dashboard")
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+PORT = next((int(a) for a in sys.argv[1:] if a.isdigit()), 8765)  # tolerate importers' own args
 
 
 def _read_events(path: str, start: int = 0) -> list[dict]:
