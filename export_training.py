@@ -20,7 +20,9 @@ import time
 from dashboard import RUNS, _read_events, _summaries
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-SITE = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "..", "chess-vision-site"))
+_ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+WATCH = "--watch" in sys.argv   # keep publishing while self-play runs are active
+SITE = os.path.abspath(_ARGS[0] if _ARGS else os.path.join(ROOT, "..", "chess-vision-site"))
 DATA = os.path.join(SITE, "training", "data")
 SRC = os.path.join(ROOT, "dashboard", "index.html")
 
@@ -196,9 +198,38 @@ def build_page() -> None:
         f.write(page)
 
 
+def publish() -> bool:
+    """Export, then commit and push the site if anything changed (the
+    hosted copy redeploys from git). Returns True when a push happened."""
+    n = export_data()
+    build_page()
+    import subprocess
+    subprocess.run(["git", "add", "-A", "training.html", "training/data"], cwd=SITE, check=True)
+    changed = subprocess.run(["git", "status", "--porcelain", "training.html", "training/data"],
+                             cwd=SITE, capture_output=True, text=True).stdout.strip()
+    if not changed:
+        print(f"{time.strftime('%H:%M')} {n} runs, nothing new")
+        return False
+    subprocess.run(["git", "commit", "-q", "-m", f"Training snapshot {time.strftime('%Y-%m-%d %H:%M')}"],
+                   cwd=SITE, check=True)
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=SITE, check=True)
+    print(f"{time.strftime('%H:%M')} {n} runs exported and pushed")
+    return True
+
+
 if __name__ == "__main__":
     if not os.path.isdir(SITE):
         sys.exit(f"site folder not found: {SITE}")
-    n = export_data()
-    build_page()
-    print(f"exported {n} runs to {DATA} and wrote {os.path.join(SITE, 'training.html')}")
+    if WATCH:
+        # Publish every 2 minutes while any run is still going, then once
+        # more with the final numbers and stop.
+        while True:
+            publish()
+            if all(r.get("done") for r in _summaries()):
+                print("all runs finished — final snapshot published")
+                break
+            time.sleep(120)
+    else:
+        n = export_data()
+        build_page()
+        print(f"exported {n} runs to {DATA} and wrote {os.path.join(SITE, 'training.html')}")
