@@ -92,6 +92,11 @@ class MenuWindow(Card):
         self.start_btn.clicked.connect(self._on_start)
         lay.addWidget(self.start_btn)
 
+        self.update_label = QLabel(""); self.update_label.setObjectName("ok")
+        self.update_label.setOpenExternalLinks(True); self.update_label.setWordWrap(True)
+        self.update_label.hide()
+        lay.addWidget(self.update_label)
+
         foot = QHBoxLayout()
         self.account_label = QLabel(""); self.account_label.setObjectName("dim")
         out = QPushButton("Sign out"); out.setObjectName("link"); out.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -102,6 +107,12 @@ class MenuWindow(Card):
     def set_note(self, text: str | None = None) -> None:
         """Line under the wordmark: why we're back here (game over, stopped)."""
         self.tag.setText(text or self.DEFAULT_NOTE)
+
+    def set_update(self, version: str, url: str) -> None:
+        """A newer build is on the website: say so, with a download link."""
+        self.update_label.setText(
+            f'Version {version} is out — <a href="{url}" style="color: #b9f24a;">download it</a>')
+        self.update_label.show()
 
     def set_account(self, email: str, status: str = "") -> None:
         self.account_label.setText(f"{email}  ·  {status}" if status else email)

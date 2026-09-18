@@ -10,3 +10,5 @@ SUPABASE_KEY = os.environ.get(
     "sb_publishable_mb1dCqK6AXx0xRZak9TvXw_8QcZkhOc",
 )
 KEYCHAIN_SERVICE = "chess-vision"
+# The website: releases.js there tells the app whether a newer build exists.
+SITE_URL = os.environ.get("CHESS_VISION_SITE_URL", "https://cool-dango-7a52fd.netlify.app")
