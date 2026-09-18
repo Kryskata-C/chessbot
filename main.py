@@ -211,6 +211,10 @@ class ChessVision(QObject):
         # Visual effect toggles (menu can override) and enemy-move capture
         self.visuals: dict = {}
         self._new_enemy_move: chess.Move | None = None
+        # A placement the tracked game can't explain exactly is only
+        # fuzzy-matched or resynced once it has been seen stable twice
+        # (a1a7 was once fuzzy-matched from a rook's a1-a2 animation frame)
+        self._unsure_fen: str | None = None
         # When the tracked game last handed the move to us: the think
         # timer counts from there, not from when analysis finished
         self._turn_started: float | None = None
@@ -256,6 +260,8 @@ class ChessVision(QObject):
             self.overlay.reset_board_visuals()
         elif op == "debug":
             self.debug_board.set_positions(**payload)
+        elif op == "update":
+            self.menu.set_update(payload["version"], payload["url"])
         elif op == "game_ended":
             # Leave the result banner up for a moment, then back to setup
             self.menu.set_note(payload["note"])
@@ -635,6 +641,7 @@ class ChessVision(QObject):
         self._last_analyzed_fen = None
         self._new_enemy_move = None
         self._turn_started = None
+        self._unsure_fen = None
         self._gui("reset_visuals")
         print("Game state reset for new game.")
 
@@ -677,7 +684,7 @@ class ChessVision(QObject):
                 changed.add(chess.square(col, 7 - row))
         return changed
 
-    def _match_moves(self, target: str) -> list[chess.Move] | None:
+    def _match_moves(self, target: str, allow_fuzzy: bool = True) -> list[chess.Move] | None:
         """Find the legal move sequence (1 or 2 plies) that turns the
         tracked position into the recognized placement.
 
@@ -716,6 +723,8 @@ class ChessVision(QObject):
                 return [m1, found]
 
         # Fuzzy single move: allow one misread square, require uniqueness
+        if not allow_fuzzy:
+            return None
         best, best_n, second_n = None, 99, 99
         for mv in b.legal_moves:
             b.push(mv)
@@ -841,18 +850,23 @@ class ChessVision(QObject):
         except Exception:
             self.game_board = None
 
-    def _track_position(self, fen_position: str):
-        """Advance the tracked game to match a newly recognized placement."""
+    def _track_position(self, fen_position: str) -> bool:
+        """Advance the tracked game to match a newly recognized placement.
+        Returns False when the placement is not accepted yet: a fuzzy
+        match or a resync is only done the second time the same placement
+        arrives stable, so a transient frame can't rewrite the game."""
         b = self.game_board
         if b.board_fen() == fen_position:
-            return
+            return True
         # A placement differing on a single square can't be a completed
         # move (every move changes at least two squares) — recognition
         # noise; keep the tracked state.
         if self._count_mismatches(b.board_fen(), fen_position) <= 1:
-            return
-        moves = self._match_moves(fen_position)
+            return True
+        confirmed = self._unsure_fen == fen_position
+        moves = self._match_moves(fen_position, allow_fuzzy=confirmed)
         if moves is not None:
+            self._unsure_fen = None
             for mv in moves:
                 mover = "w" if b.turn == chess.WHITE else "b"
                 b.push(mv)
@@ -863,7 +877,7 @@ class ChessVision(QObject):
             self.current_turn = "w" if b.turn == chess.WHITE else "b"
             if self.current_turn == self.player_color:
                 self._turn_started = time.time()
-            return
+            return True
 
         # Takeback? (user pressed undo) — walk back through our own history
         tmp = b.copy()
@@ -874,10 +888,19 @@ class ChessVision(QObject):
                     b.pop()
                 print(f"Takeback detected — rewound {k} half-move(s)")
                 self.current_turn = "w" if b.turn == chess.WHITE else "b"
-                return
+                self._unsure_fen = None
+                return True
 
+        if not confirmed:
+            self._unsure_fen = fen_position
+            print("Recognized position doesn't follow from the tracked game — "
+                  "waiting for it to be confirmed.")
+            self._status("Confirming position...", BLUE)
+            return False
+        self._unsure_fen = None
         print("Recognized position doesn't follow legally — resyncing.")
         self._init_game_state(fen_position)
+        return True
 
     _PIECE_VALUES = {
         chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
@@ -1256,8 +1279,12 @@ class ChessVision(QObject):
             # placement; falls back to a hard resync when nothing does.
             if self.game_board is None:
                 self._init_game_state(fen_position)
-            else:
-                self._track_position(fen_position)
+            elif not self._track_position(fen_position):
+                # Not accepted yet: it must hold for another stability
+                # window before a fuzzy match or resync is trusted.
+                self._pending_fen = fen_position
+                self._pending_count = 0
+                return
             # The tracker confirmed this placement: any piece standing on
             # a square colour we only had a synthesized template for is a
             # free, real template (kings/queens on the "other" colour
@@ -1574,6 +1601,12 @@ def _setup_logging():
     if not FROZEN:
         return
     try:
+        # Keep the log bounded: roll it over once it passes 2 MB.
+        try:
+            if os.path.getsize(LOG_FILE) > 2_000_000:
+                os.replace(LOG_FILE, LOG_FILE + ".1")
+        except OSError:
+            pass
         f = open(LOG_FILE, "a", buffering=1)
         sys.stdout = sys.stderr = f
         print(f"\n=== Chess Vision started {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
@@ -1607,8 +1640,16 @@ def main():
         config_error = f"Account server not configured: {e}"
     login = LoginWindow(accounts, config_error)
 
+    def check_updates():
+        import updates
+        found = updates.check()
+        if found:
+            print(f"Update available: {found['version']} ({found['url']})")
+            vision.sig_gui.emit("update", found)
+
     def on_signed_in(profile):
         print(f"Signed in: {profile.email} ({profile.status_text})")
+        threading.Thread(target=check_updates, daemon=True).start()
         vision.set_accounts(accounts)
         vision.menu.set_account(profile.email, profile.status_text)
         vision.menu.show()
