@@ -4,7 +4,7 @@ One Edge Function keeps `profiles.active` / `profiles.expires_at` in step with
 Stripe. The site and the app never talk to Stripe themselves.
 
 ```
-pricing button ──► Stripe Payment Link ──► redirect dashboard.html?paid=1
+pricing button ──► Stripe Payment Link ──► redirect thanks.html
                           │
                           └─ webhook ──► stripe-webhook (this function) ──► profiles
 ```
@@ -21,7 +21,7 @@ Run `supabase/stripe.sql` in the SQL editor (adds `stripe_customer_id`,
 2. **Payment Link** for that price:
    - Collect customer e-mail (default).
    - After payment → *Don't show confirmation page*, redirect to
-     `https://cool-dango-7a52fd.netlify.app/dashboard.html?paid=1`
+     `https://cool-dango-7a52fd.netlify.app/thanks.html`
      (use the custom domain once there is one).
    - Copy the link (`https://buy.stripe.com/...`) → `CV.STRIPE.PAY_LINK` in
      `~/chess-vision-site/sb.js`.
