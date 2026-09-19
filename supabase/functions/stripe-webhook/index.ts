@@ -21,7 +21,19 @@
 import Stripe from "npm:stripe@18";
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-const stripe = new Stripe(Deno.env.get("STRIPE_SECRET_KEY") ?? "");
+// Built on first use: the Stripe client throws on an empty key, and the
+// function must still boot (and say what is missing) before secrets are set.
+let _stripe: Stripe | null = null;
+const stripe = new Proxy({} as Stripe, {
+  get(_t, prop) {
+    if (!_stripe) {
+      const key = Deno.env.get("STRIPE_SECRET_KEY");
+      if (!key) throw new Error("STRIPE_SECRET_KEY secret is not set");
+      _stripe = new Stripe(key);
+    }
+    return (_stripe as unknown as Record<string | symbol, unknown>)[prop];
+  },
+});
 const WEBHOOK_SECRET = Deno.env.get("STRIPE_WEBHOOK_SECRET") ?? "";
 const db = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -171,7 +183,8 @@ async function handle(event: Stripe.Event) {
 Deno.serve(async (req) => {
   if (req.method !== "POST") return respond(405, { error: "POST only" });
   const sig = req.headers.get("stripe-signature");
-  if (!sig || !WEBHOOK_SECRET) return respond(400, { error: "missing signature or webhook secret" });
+  if (!WEBHOOK_SECRET || !Deno.env.get("STRIPE_SECRET_KEY")) return respond(500, { error: "Stripe secrets are not set on this function" });
+  if (!sig) return respond(400, { error: "missing stripe-signature header" });
 
   let event: Stripe.Event;
   try {
