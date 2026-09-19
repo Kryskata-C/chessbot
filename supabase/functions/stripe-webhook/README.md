@@ -21,8 +21,8 @@ Run `supabase/stripe.sql` in the SQL editor (adds `stripe_customer_id`,
 2. **Payment Link** for that price:
    - Collect customer e-mail (default).
    - After payment → *Don't show confirmation page*, redirect to
-     `https://cool-dango-7a52fd.netlify.app/thanks.html`
-     (use the custom domain once there is one).
+     `https://chessvision.cc/thanks.html`
+     .
    - Copy the link (`https://buy.stripe.com/...`) → `CV.STRIPE.PAY_LINK` in
      `~/chess-vision-site/sb.js`.
 3. **Customer portal**: Settings → Billing → Customer portal → activate,
