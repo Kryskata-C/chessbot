@@ -1647,12 +1647,21 @@ def main():
             print(f"Update available: {found['version']} ({found['url']})")
             vision.sig_gui.emit("update", found)
 
+    # Between sign-in and the setup card: a reminder that the recogniser
+    # only knows chess.com's default board and pieces (skippable for good).
+    from board_setup import BoardSetupWindow, reminder_dismissed
+    board_setup = BoardSetupWindow()
+    board_setup.done.connect(lambda: vision.menu.show())
+
     def on_signed_in(profile):
         print(f"Signed in: {profile.email} ({profile.status_text})")
         threading.Thread(target=check_updates, daemon=True).start()
         vision.set_accounts(accounts)
         vision.menu.set_account(profile.email, profile.status_text)
-        vision.menu.show()
+        if reminder_dismissed():
+            vision.menu.show()
+        else:
+            board_setup.show(); board_setup.raise_(); board_setup.activateWindow()
 
     def on_sign_out():
         vision.menu.hide()
