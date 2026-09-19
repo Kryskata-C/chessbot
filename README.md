@@ -2,256 +2,104 @@
   <img src="https://cdn.jsdelivr.net/gh/Kryskata-C/chessbot@main/assets/banner.svg" alt="Chess Vision" width="100%"/>
 </p>
 
-<h3 align="center">👁️ It sees the board. 🧠 It thinks like a human. ⚡ It plays to <em>your</em> opponent.</h3>
+<h3 align="center">The first chess bot that plays like a human.</h3>
 
 <p align="center">
-  <strong>A real-time chess.com move assistant that reads your screen with computer vision, runs Stockfish underneath,<br/>then deliberately <em>de-optimizes</em> the engine through a mathematical model of human play —<br/>so the moves it hands you look like a slightly-better-than-your-opponent human, not a 3500-rated machine.</strong>
+  <strong>Chess Vision watches your chess.com board, runs Stockfish underneath, and then deliberately <em>de-optimises</em> the engine through a model of human play, so the move it suggests is the one a slightly-better-than-your-opponent person would find, not a 3500-rated machine.</strong>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10+-3776ab?style=for-the-badge&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/macOS-Sonoma%2B-000000?style=for-the-badge&logo=apple&logoColor=white"/>
+  <a href="https://chessvision.cc"><img src="https://img.shields.io/badge/chessvision.cc-%E2%82%AC10.99%20%2F%20month-b9f24a?style=for-the-badge"/></a>
+  <img src="https://img.shields.io/badge/macOS-12%2B%20Apple%20Silicon-000000?style=for-the-badge&logo=apple&logoColor=white"/>
+  <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4?style=for-the-badge"/>
   <img src="https://img.shields.io/badge/Engine-Stockfish-47a341?style=for-the-badge"/>
   <img src="https://img.shields.io/badge/Vision-OpenCV-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white"/>
-  <img src="https://img.shields.io/badge/Overlay-PyQt6-41CD52?style=for-the-badge&logo=qt&logoColor=white"/>
   <img src="https://img.shields.io/badge/License-Proprietary-f7b731?style=for-the-badge"/>
 </p>
 
 <p align="center">
-  <code>screen → HSV mask → contours → template match → FEN → Stockfish MultiPV → softmax over regret → human prior → opponent-adaptive risk → glowing overlay</code>
+  <code>screen → board → pieces → legal game state → Stockfish MultiPV → softmax over regret → human prior → opponent-adaptive risk → think timer → overlay</code>
 </p>
 
 ---
 
-## 🎯 What This Actually Is
+## What it is
 
-Most "chess assistants" are a screenshot and an arrow. This is a **five-stage pipeline** where the interesting part is *after* the engine:
+A desktop app for Mac and Windows, sold as a monthly subscription at [chessvision.cc](https://chessvision.cc). You open chess.com in your browser, start the app, pick a strength, and it draws the move it would play straight onto your board: a glowing arrow, a ghost piece, the opponent's likely reply, an eval bar, threat warnings. You still make every move yourself.
 
-| Stage | What happens | Math involved |
-|---|---|---|
-| 👁️ **Vision** | Finds the board, reads all 64 squares | HSV thresholding, morphology, normalized cross-correlation |
-| 🧭 **State** | Turns pixels into a legal game state, tracks whose turn it is | Diff-gating, legal-move matching, orientation inference |
-| ⚙️ **Engine** | Stockfish MultiPV, depth 12, top-N candidates | Centipawn evals, mate scoring |
-| 🧠 **Human layer** | Picks a move a human of ELO $E$ would play *against this opponent* | Softmax over regret, ELO↔ACPL curve, closed-loop control, risk appetite |
-| ✨ **Overlay** | Draws it — arrows, ghost pieces, threat radar, eval bar | Cocoa window levels, click-through, ~2% CPU |
+What makes it different is everything *after* the engine. Perfect moves in a 1500 game stand out a mile. Chess Vision plays a bit better than the person across the board, with small, natural slips in the right places, and on every move it asks one question:
 
-The bot is not built to win every game. It is built to **beat the opponent the way a slightly better human would** — with real, small, well-placed mistakes — and to constantly ask, move by move:
+> *Is this a moment to be sharp, or am I far enough ahead against this opponent to play something relaxed?*
 
-> *"Do I need a good move here, or am I far enough ahead against this opponent to afford a realistic slip?"*
+This repository is the whole product: the app, the packaging and release pipeline, the self-play tuning harness, and the Supabase side of accounts and billing. The website lives in [chess-vision-site](https://github.com/Kryskata-C/chess-vision-site).
 
 ---
 
-## ⚡ The Pipeline
+## The pipeline
 
 <p align="center">
   <img src="https://cdn.jsdelivr.net/gh/Kryskata-C/chessbot@main/assets/architecture.svg" alt="Architecture" width="100%"/>
 </p>
 
-### 👁️ Stage 1 — Vision
+| Stage | What happens | Where |
+|---|---|---|
+| **Vision** | Finds the board on any display, reads all 64 squares | `board_detector.py`, `piece_recognizer.py`, `capture.py` |
+| **State** | Turns noisy frames into a legal game, tracks whose turn it is | `main.py` |
+| **Engine** | Stockfish MultiPV, depth 12, top-N candidates | `engine.py` |
+| **Human layer** | Picks the move a human of rating *E* would play against *this* opponent | `move_selector.py`, `elo_estimator.py`, `openings.py`, `session.py` |
+| **Timing** | Decides how long a human would think, paced to the clock | `think_time.py` |
+| **Overlay** | Draws it, click-through, above everything, invisible to its own capture | `overlay.py`, `native.py` |
 
-**Board detection** (`board_detector.py`). Every frame is converted to HSV and masked for chess.com's two square colors:
+### Vision
 
-$$
-M = \mathbb{1}\big[H \in [30,90],\, S \in [40,255],\, V \in [80,200]\big] \;\lor\; \mathbb{1}\big[H \in [20,45],\, S \in [10,80],\, V \in [180,255]\big]
-$$
+The board is found by masking chess.com's two default square colours in HSV, closing and opening the mask, and taking the largest roughly square contour. Pieces are read by normalised cross-correlation against 20 templates (six piece types, two colours, on light and dark squares): a square holds a piece when the best match scores at least 0.55. Kings get a recovery pass at 0.25, because chess.com's check glow drags their score down and a position without a king is not a position.
 
-The mask is cleaned with a $5\times5$ morphological **close** ($\times 3$) then **open** ($\times 2$) — fills the gaps between squares, kills specks — and the largest external contour with area $> 10^4$ px and aspect $0.8 < w/h < 1.2$ wins. It's snapped to a perfect square, $s = \min(w,h)$, so each square is $s/8$ px.
+Templates are cut from the screen the first time the app sees a starting position, from either side of the board, and re-cut whenever a starting position is plainly on screen but the templates disagree. That's why the app only knows chess.com's **Green board with Neo pieces**, the defaults, and why it shows a reminder card about them after sign-in.
 
-**Piece recognition** (`piece_recognizer.py`). Each square is resized to a fixed template size and matched against 20 templates (six piece types × two colors, on light *and* dark squares — because a black knight on green is not the same pixels as a black knight on beige). Scoring is normalized cross-correlation:
+### State
 
-$$
-R(x,y) = \frac{\sum_{x',y'} \big(T'(x',y')\cdot I'(x+x',y+y')\big)}{\sqrt{\sum T'(x',y')^2 \cdot \sum I'(x+x',y+y')^2}}, \qquad T' = T - \bar T,\; I' = I - \bar I
-$$
+No single frame is trusted. A change touching one square can't be a completed move, so it's dropped. Multi-square changes are decomposed into arrivals per colour and matched against every legal move, and legal two-move sequences for when a frame was skipped, on a `python-chess` board that shadows the real game. A placement is accepted only if the diff *is* a legal move, and a fuzzy match or resync has to be seen stable twice. Zero hallucinated positions; a promotion pop-up or a piece caught mid-animation can't rewrite the game.
 
-A square is a piece if $\max_{\text{templates}} R \geq 0.55$. Kings get special treatment: when a king "vanishes" (check-glow and last-move highlights change the square's background), a recovery pass rescans empty squares with a relaxed $R \geq 0.25$ — because a position without a king is not a position.
+### Engine
 
-Templates are auto-extracted from the starting position by `calibrate.py`, so they match **your** display and **your** theme pixel-for-pixel.
-
-### 🧭 Stage 2 — State
-
-Raw recognition is noisy: mid-animation frames, hover highlights, premove arrows. So the app never trusts a single frame blindly:
-
-- **Diff gate.** Frames are compared as placement strings; a change touching one square can't be a completed move (pieces don't teleport), so it's discarded. Multi-square changes are decomposed into *white arrivals* and *black arrivals* to infer whose move just happened.
-- **Legal-move matching.** A `python-chess` board shadows the real game. Each new placement is matched against every legal move (and legal 2-move sequences, for the case where a frame was skipped) — the placement is only accepted if the diff *is* a legal move. Zero hallucinated positions.
-- **Orientation.** Your color is inferred once from which side's pieces sit on the bottom ranks.
-- **Turn tracking** falls out of the above: if a legal *opponent* move explains the diff, it's your turn.
-
-### ⚙️ Stage 3 — Engine
-
-Stockfish (depth 12, 2 threads, 128 MB hash) in **MultiPV** mode returns the top-$N$ candidates with centipawn evaluations; mates are mapped to $\pm 10^5$. The human layer decides how many candidates it even wants to see:
-
-$$
-N = \mathrm{clamp}\!\Big(\big\lfloor 5 + \tfrac{1900 - E}{110} \big\rceil,\; 4,\; 16\Big)
-$$
-
-A 2000 plays from ~4 moves. An 800 weighs ~15 (and most of them are bad).
+Stockfish in MultiPV mode returns the top-N candidates with centipawn evals; mates map to ±100000. The human layer decides how many candidates it wants to see, `N = clamp(round(5 + (1900 − E) / 110), 4, 16)`: a 2000 chooses from about 4 moves, an 800 weighs about 15, most of them bad.
 
 ---
 
-## 🧠 Stage 4 — The Human Layer
+## The human layer
 
-This is the core of the project. `move_selector.py` is a **stochastic policy over engine candidates**, parametrized by an ELO $E$ and shaped by five coupled mechanisms.
+`move_selector.py` is a stochastic policy over engine candidates, parametrised by a rating *E* and shaped by a handful of coupled mechanisms. Every constant below was set by self-play, never by feel.
 
-### 4.1 — ELO ⇄ Accuracy
+**Rating ⇄ accuracy.** One empirical curve anchors everything, linking rating to average centipawn loss:
 
-Everything is anchored to one empirical curve linking rating to *average centipawn loss* (ACPL):
+$$E(\text{acpl}) = 4034 - 667\ln(\text{acpl}), \qquad \text{acpl}(E) = e^{(4034 - E)/667}$$
 
-$$
-E(\text{acpl}) = 4034 - 667\,\ln(\text{acpl}), \qquad \text{acpl}(E) = e^{(4034 - E)/667}
-$$
+A 2000 loses about 21 cp a move, a 1200 about 70, an 800 about 127. The same curve runs both ways: it estimates the opponent from their moves and the bot from its own.
 
-| ELO | Target ACPL |
-|---|---|
-| 2500 | ~10 cp |
-| 2000 | ~21 cp |
-| 1600 | ~38 cp |
-| 1200 | ~70 cp |
-| 800 | ~127 cp |
+**Softmax over regret.** With candidate evals $v_m$, best $v^\star$, and regret $\Delta_m = v^\star - v_m$, the move is sampled from
 
-The same curve runs **both directions**: it estimates the opponent from *their* moves, and it estimates the bot from *its own* chosen moves (the "realized ELO").
+$$P(m) \propto \exp\!\Big(-\frac{\Delta_m}{T} + w\,\pi(m) + \kappa(m)\Big), \qquad \Delta_m \le L_{\max}$$
 
-### 4.2 — Softmax over regret
+- $T$ is the temperature: how much regret we're willing to spend. It's a base value from the rating curve multiplied by a stack of situational factors: near-book in the first plies, tighter in endgames, tighter when one move is obviously forced, looser with a comfortable lead, tighter when the eval is sliding, looser after a suspicious run of perfect moves.
+- $\pi(m)$ is a human prior: how tempting a move *looks*. Checks, captures and promotions attract; quiet retreats, early queen sorties and moves that land a piece en prise repel. It's scaled by weakness $w$, because weak players react to how a move looks and strong players calculate.
+- $\kappa(m)$ is a coherence penalty on un-human sequences: shuffling a piece straight back, returning to a square just vacated.
+- $L_{\max}$ is a hard ceiling on single-move error. It collapses toward "best move only" when the position screams for one move, and it's what makes a 1600 never hang a piece for nothing.
 
-Given candidates $m$ with evals $v_m$, best $v^\star$, define each move's regret $\Delta_m = v^\star - v_m$. The move is sampled from
+**Temptation injection.** The engine's top-N are all reasonable. Real weak-player blunders live further down: the poisoned pawn, the premature attack. With a rating-dependent probability, a few captures and checks outside the top-N are evaluated at shallow depth and injected if their loss sits in a plausible window, and the prior, which loves captures, does the rest. Blunders land where a human's would.
 
-$$
-P(m) \;\propto\; \exp\!\Big( -\frac{\Delta_m}{T} \;+\; w\,\pi(m) \;+\; \kappa(m) \Big), \qquad \Delta_m \le L_{\max}
-$$
+**Anti-domination governor.** Each game samples a target margin. Above it the bot coasts, letting the temperature rise while only allowing moves that keep the eval above a win floor. A won game is never thrown, and it's never a 40-move rout either. Some games are close, some comfortable, like a real player's.
 
-Three terms, three ideas:
+**Closed-loop controller.** A slow proportional controller measures the bot's realised rating from its own move losses and nudges the temperature gain so the realised rating converges on the target within a game.
 
-- **$T$ — temperature.** How much regret we're willing to spend. Hot = weak. Built from a stack of multipliers (below).
-- **$\pi(m)$ — human prior.** How *tempting* the move looks to a human, scaled by weakness $w = \mathrm{clamp}\!\big(\tfrac{1900 - E}{1300},0,1\big)$. Weak players react to how a move *looks*; strong players calculate.
-- **$\kappa(m)$ — coherence.** Penalizes un-human sequences (Ra2 then Ra1).
-- **$L_{\max}$ — the ceiling.** A hard cutoff on single-move error. This is what makes a 1600 *never* hang a piece for nothing.
+**Opponent adaptation.** The menu rating is only a prior. The bot reads the opponent's printed rating off chess.com with OCR, watches their moves, estimates their rating from their loss, and drifts the rating it imitates toward "a bit better than them". The edge is sampled per game, so sometimes it's near parity and the game is genuinely close. Then on every move it computes a cushion, how much eval it can spend before dipping under an opponent-aware floor, and lets that drive both temperature and ceiling. Ahead: relax, but never spend more than a slice of the lead in one move. Equal or behind: focus. Asymmetric on purpose.
 
-#### The human prior $\pi(m)$
+**Opening repertoire** (`openings.py`). Engines pick openings fresh every game; people play the same handful of lines for years. The bot follows a small human book for its first moves, with per-installation favourites, then hands over to the engine.
 
-| Feature | Log-weight | Why |
-|---|---|---|
-| Gives check | **+0.6** | Checks grab attention |
-| Winning/equal capture | **+0.7** | Magnetic |
-| Losing capture | +0.15 | Still tempting, less so |
-| Queen promotion | **+0.8** | Impossible to miss |
-| Apparent hang (lands en prise, undefended, cheaper attacker) | **−0.9** | The engine sacrifice a human refuses |
-| Quiet retreat | −0.3 | Psychologically avoided |
-| Early queen sortie to a loose square (< move 10) | **−0.7** | Qa4?! then a lost queen — cost a real game |
+**Session governor** (`session.py`). Per-game randomness makes single games vary the way a person's do, but a best-move rate sitting at 55% for a month is a tell no single game shows. The governor watches the last few games and keeps the averages human too.
 
-#### The coherence penalty $\kappa(m)$
+**Think time** (`think_time.py`). The overlay's timer is paced to the clock: the player's clock is read with OCR each turn, the time control is chosen in the menu or inferred from the clock at move one, and the remaining time is split over the moves still expected, minus a reserve. Each move's share is bent by the position, obvious moves fast, real decisions slow, time trouble flattening everything toward premove speed. Simulated over thousands of games it never flags.
 
-| Pattern | Log-weight |
-|---|---|
-| Immediate reversal (piece straight back) | **−1.6** |
-| Return to a square vacated in last 2 own moves | −0.7 |
-| Re-moving the piece that just moved | −0.35 |
-
-Applied at every ELO — nobody good shuffles. Because it's additive in the exponent, a *genuinely forced* reversal (huge $\Delta$ on everything else) still wins.
-
-### 4.3 — Temperature: the multiplier stack
-
-$$
-T = \underbrace{\mathrm{clamp}\big(\text{acpl}(E)\,(1.9 + 3.4w),\,6,\,800\big)}_{T_{\text{base}}}
-\cdot g
-\cdot f_{\text{open}}
-\cdot f_{\text{end}}
-\cdot (1 - 0.6\,c)
-\cdot A(C)
-\cdot (1 - 0.4\,u)
-\cdot f_{\text{coast}}
-\cdot f_{\text{streak}}
-$$
-
-| Factor | Formula | Effect |
-|---|---|---|
-| $g$ | closed-loop gain (§4.5) | tunes realized ELO onto target |
-| $f_{\text{open}}$ | $0.5 + 0.45\cdot\tfrac{n}{6}$ for plies $n<6$ | near-book early |
-| $f_{\text{end}}$ | $0.7$ if $\le 12$ pieces | endgames are forcing |
-| $c$ — criticality | $\mathrm{clamp}\!\big(\tfrac{(v_1 - v_2) - 30}{170},0,1\big)$ | one obvious move → everyone finds it |
-| $A(C)$ — risk appetite | §4.6 | relax when ahead, bear down when behind |
-| $u$ — trend urgency | OLS slope of last 6 evals; $u = \min(1, \lvert\beta\rvert/100)$ if $\beta<0$ | sliding downhill → focus |
-| $f_{\text{coast}}$ | $1 + \min\!\big(\tfrac{v^\star - M}{M}, 1.5\big)$ when $v^\star > M$ | anti-domination governor |
-| $f_{\text{streak}}$ | $\min(1 + 0.06(k-5), 1.3)$ after $k\ge6$ best moves in a row | no suspicious perfection |
-
-And the ceiling:
-
-$$
-L_{\max} = 5\cdot\text{acpl}(E)\cdot(1 - 0.85\,c) \quad (\times 0.5 \text{ in the first 6 plies}),\qquad L_{\max}\ge 12
-$$
-
-When the position screams for one move ($c \to 1$), $L_{\max}$ collapses toward "best move only" — a recapture gets recaptured, a mate-in-one gets played. When five moves are all fine ($c = 0$), a 1600 has ~190 cp of room to be human.
-
-### 4.4 — Temptation injection
-
-The engine's top-$N$ are all *reasonable*. Real weak-player blunders live further down: the poisoned pawn, the premature attack. So with probability $p = 0.15 + 0.55w$ (never in forcing positions), a few captures/checks *outside* the top-$N$ are evaluated at shallow depth and injected into the pool if their loss sits in the plausible window $60 \le \Delta \le L_{\max}$. Then the human prior decides — and the human prior *loves* captures. Blunders land where a human's would.
-
-### 4.5 — Anti-domination governor + closed-loop controller
-
-Each game samples a **target margin** $M \sim \mathcal{N}(260, 110)$ clamped to $[90, 650]$ cp. Below it, play normally. Above it, *coast* — the temperature rises and only moves keeping the eval above a **win floor** are allowed:
-
-$$
-\text{floor}_{\text{win}} = \mathrm{clamp}\big(0.5M + 0.3\,\gamma,\; 70,\; 320\big)
-$$
-
-so a won game is never thrown, but it's also never a 40-move rout. Some games are close, some comfortable — like a real player's.
-
-Meanwhile a slow **proportional controller** measures the bot's own realized ELO $E_r$ (its chosen-move losses through the ACPL curve) and nudges the gain:
-
-$$
-g \leftarrow g\cdot\exp\!\Big(\mathrm{clamp}\!\big(\tfrac{E_r - E_{\text{eff}}}{900},\,-0.15,\,0.15\big)\Big), \qquad g\in[0.3, 6]
-$$
-
-Playing too strong → loosen. Too weak → tighten. It converges within a game.
-
-### 4.6 — Opponent adaptation ⭐ *(new)*
-
-The menu ELO is only a **prior**. The bot watches the opponent's moves, estimates their rating $E_o$ from their ACPL, and drifts the ELO it imitates toward *"a bit better than them"*:
-
-$$
-\text{conf} = \mathrm{clamp}\!\Big(\tfrac{n_o - 3}{9},0,1\Big),\qquad
-E_{\text{want}} = E_t + 0.85\cdot\text{conf}\cdot\Big(\mathrm{clamp}(E_o + \varepsilon,\; E_t \pm 300) - E_t\Big)
-$$
-
-$$
-E_{\text{eff}} \leftarrow E_{\text{eff}} + 0.3\,(E_{\text{want}} - E_{\text{eff}})
-$$
-
-where the **edge** $\varepsilon \sim \mathcal{N}(90, 55)$ clamped to $[-10, 200]$ is sampled per game — sometimes near parity (a genuinely close game, which we may lose), sometimes comfortable. Every ELO-driven knob above ($T_{\text{base}}$, $N$, $L_{\max}$, $w$, the controller setpoint) reads $E_{\text{eff}}$.
-
-Then, **every single move**, the risk question. Let $\gamma = \text{conf}\cdot(E_o - E_{\text{eff}})$ be the strength gap (positive = they're better). The **cushion** is how much eval we can spend before dipping under an opponent-aware floor:
-
-$$
-C = v^\star - \mathrm{clamp}(40 + 0.35\gamma,\,-40,\,220)
-$$
-
-A stronger opponent punishes slips → keep more in hand. A weaker one gives it back → equality is fine to drift to. The cushion drives both the temperature and the ceiling:
-
-$$
-A(C) = \begin{cases} 1 + 0.5\min(1, C/250) & C \ge 0 \\ \max(0.4,\; 1 + C/400) & C < 0 \end{cases}
-\qquad
-L_{\max} \leftarrow \begin{cases} \min\big(L_{\max},\; 1.8\,\text{acpl} + 0.6\,C\big) & C \ge 0 \\ L_{\max}\cdot\max(0.5,\; 1 + C/500) & C < 0 \end{cases}
-$$
-
-Read it as: **ahead → relax, but never spend more than a slice of the lead in one move** (a realistic *small* mistake, not one that hands the game back). **Equal or behind → focus.** Asymmetric on purpose. That's how a human who wants to win actually plays.
-
-### 4.7 — Estimator warm-up
-
-Both ELO estimators use an EMA on capped CPL with a running-mean warm-up so one early move can't dominate:
-
-$$
-\alpha_n = \max\!\big(0.15,\; \tfrac{1}{n}\big), \qquad \overline{\text{cpl}}_n = \alpha_n\,\text{cpl}_n + (1-\alpha_n)\,\overline{\text{cpl}}_{n-1}
-$$
-
-### 📊 Calibration (self-play, v1)
-
-| Target | Realized | Note |
-|---|---|---|
-| 800 | ~945 | structural floor — can't average huge loss without hanging pieces every move |
-| 1200 | ~1400 | |
-| 1600 | ~1700 | |
-| 2000 | ~2080 | |
-| 2400 | ~2640 | |
-
-Real-game tuning is ongoing. The console log prints every decision:
+Every decision is printed, so a game can be read back move by move:
 
 ```
 [ ] move=d1a4  loss=82cp  temp=326  target=1600  eff=1671  opp=1618(+90)  realized=1694  gain=1.86  margin=157  cushion=68  crit=0.17  coast=0
@@ -259,252 +107,160 @@ Real-game tuning is ongoing. The console log prints every decision:
 
 ---
 
-## ✨ Stage 5 — The Overlay
+## The overlay
 
 <p align="center">
   <img src="https://cdn.jsdelivr.net/gh/Kryskata-C/chessbot@main/assets/features.svg" alt="Features" width="100%"/>
 </p>
 
-A transparent PyQt6 window pinned above **everything** via native Cocoa calls (`ctypes`): `NSScreenSaverWindowLevel` (level 1000), `setIgnoresMouseEvents:YES` for full click-through, `canJoinAllSpaces` so it follows you across desktops, and it excludes itself from screen capture so it never sees its own arrows.
+A transparent PyQt6 window pinned above everything and fully click-through, which excludes itself from screen capture so it never sees its own arrows. Every visual is a toggle on the setup card: move arrow, ghost piece, their reply, line preview, alternatives, threats, move trail, eval bar, think timer. A debug board shows what the vision layer sees and the live rating estimates.
 
-Toggle every visual from the animated startup menu:
-
-| Visual | What it does |
-|---|---|
-| ➤ **Best-move arrow** | Animated glowing arrow for the chosen move |
-| ♞ **Ghost piece slide** | Translucent piece glides along the move |
-| ⚔ **Enemy reply arrow** | Predicted response, dashed orange |
-| ☰ **Line preview** | Chains the next plies of the engine line |
-| ≡ **Candidate moves** | Faint arrows for alternatives |
-| ☠ **Threat radar** | Pulsing red glow on your pieces under attack |
-| ✦ **Enemy move trail** | Fading trail of the opponent's last move |
-| ▮ **Live eval bar** | Animated eval bar beside the board |
-
-Plus a **debug board** window showing what the vision layer sees, opponent ACPL/ELO, and `Bot ELO: 1600 target · 1676 eff · 1650 realized`.
-
-**Performance:** capture stays on the GUI thread (mss requirement), recognition runs on a worker, frames are captured only for the board region once found, and a placement-diff gate skips the engine entirely when nothing changed. Idle cost ≈ **2% CPU**.
+Capture stays on the GUI thread, recognition runs on a worker, only the board region is grabbed once found, and a placement-diff gate skips the engine entirely when nothing changed. Idle cost is about 2% CPU.
 
 ---
 
-## 🚀 Setup
+## Running from source
 
-**Requirements:** macOS (Cocoa overlay), Python 3.10+, Stockfish.
-
-```bash
-brew install stockfish
-git clone https://github.com/Kryskata-C/chessbot.git
-cd chessbot
-pip install -r requirements.txt
-```
-
-Grant screen recording: **System Settings → Privacy & Security → Screen Recording** → enable your terminal.
-
-### Calibrate once
-
-Open chess.com at the **starting position** (default green/beige theme):
+Python 3.11 or newer, Stockfish, and on macOS a terminal with Screen Recording permission.
 
 ```bash
-python3 calibrate.py
+brew install stockfish                      # Windows: any stockfish.exe on PATH
+git clone https://github.com/Kryskata-C/chessbot.git && cd chessbot
+python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+./venv/bin/python main.py
 ```
 
-Extracts the 20 piece templates from *your* screen into `templates/`. (Skip it and the app auto-calibrates the first time it sees a starting position — from either side of the board — and recalibrates by itself when it later sees a starting position that the current templates can't read, i.e. you changed piece set or theme.)
+The app opens with a sign-in window (see Accounts), then the board reminder, then the setup card: colour, strength 400 to 2800, time control, visuals, start. `Ctrl+Q` quits.
 
-### Play
-
-```bash
-python3 main.py
-```
-
-Pick your color, pick the bot strength (Novice → Master, 400–2800), toggle visuals, hit start.
-
-| Key | Action |
-|---|---|
-| `Ctrl+Q` | Quit |
-| `Ctrl+C` | Quit (terminal) |
-
-### Ship it as an app
-
-`packaging/build_app.sh` turns the checkout into a double-clickable **Chess Vision.app** (PyInstaller) with Stockfish bundled inside — no terminal, no Homebrew, no Python on the user's Mac. The opponent-rating OCR uses macOS's own Vision framework, so nothing else needs installing.
-
-```bash
-pip install -r requirements.txt pyinstaller
-packaging/build_app.sh                                   # dist/Chess Vision.app + dist/ChessVision-<ver>-<arch>.zip
-CV_SIGN_IDENTITY="Developer ID Application: …" packaging/build_app.sh   # hardened-runtime signed, notarisable
-packaging/notarize.sh dist/ChessVision-1.0.0-arm64.zip   # after `xcrun notarytool store-credentials chessvision`
-```
-
-* Builds for the CPU of the Mac it runs on (Apple Silicon or Intel); build on each to ship both.
-* Writable state lives in `~/Library/Application Support/Chess Vision/` (templates, live game logs, `chess-vision.log` with everything the terminal would have shown).
-* Without a Developer ID the app is ad-hoc signed: other Macs need right-click → Open once (or `xattr -dr com.apple.quarantine`).
-* First launch asks for **Screen Recording** permission for "Chess Vision" (System Settings → Privacy & Security); restart the app after granting.
+`config.py` reads `CHESS_VISION_SUPABASE_URL`, `CHESS_VISION_SUPABASE_KEY` and `CHESS_VISION_SITE_URL` from the environment, with the production values as defaults. `SCAN_INTERVAL_MS` in `main.py` (400) and `ChessEngine(depth=12, threads=2)` are the two knobs worth knowing.
 
 ---
 
-## 🗂 Project Structure
+## Releases
 
-```
-chessbot/
-├── main.py              # Scan loop, state machine, turn tracking, GUI dispatch
-├── move_selector.py     # 🧠 The human layer — the math above lives here
-├── elo_estimator.py     # ELO ⇄ ACPL curve, EMA estimators
-├── engine.py            # Stockfish wrapper (MultiPV, eval, recovery)
-├── board_detector.py    # HSV mask → morphology → contour → board rect
-├── piece_recognizer.py  # Template matching, king recovery, FEN builder
-├── capture.py           # mss screen/region capture
-├── overlay.py           # PyQt6 overlay + debug board window
-├── menu.py              # Animated startup menu (color, ELO, visuals)
-├── auth.py / account_ui.py / config.py  # Supabase accounts: login, licence gate, admin panel
-├── recorder.py          # Records every live game to live_games/ (JSONL + PGN)
-├── openings.py          # Human opening repertoire (per-user favourites)
-├── session.py           # Cross-game governor: keeps best-move % / ACPL human over a session
-├── opponent_rating.py   # OCR of the opponent's printed rating (prior for adaptation)
-├── calibrate.py         # Template extraction
-├── recalibrate.py       # Quick non-interactive recalibration
-├── selfplay.py          # Tuning harness: bot vs rating-capped Stockfish, streams JSON events
-├── dashboard.py         # Live training dashboard (serves dashboard/index.html)
-├── runstats.py          # One-line summary per self-play run
-└── templates/           # Generated piece templates
+One command cuts a release for both platforms:
+
+```bash
+./venv/bin/python packaging/release.py 1.2.0 --push \
+  -n "new: Headline: detail" -n "improved: Headline: detail" -n "fixed: Headline: detail"
+./venv/bin/python packaging/release.py 1.2.0 --refresh     # once CI has attached the Windows zip
 ```
 
-Knobs: `SCAN_INTERVAL_MS` in `main.py` (default 400), `ChessEngine(depth=12, threads=2)`.
+It bumps `version.py`, builds the Mac app with `packaging/build_app.sh` (PyInstaller, Stockfish bundled, signed with whatever `CV_SIGN_IDENTITY` names, ad-hoc otherwise), prepends the release to the website's `releases.js` with notes, tags `vX`, pushes both repos and creates the GitHub release with the Mac zip. The tag triggers `.github/workflows/windows-build.yml`, which builds `ChessVision-X-windows-x64.zip` with `packaging/build_win.ps1` and attaches it to the same release. `--refresh` then writes the Windows link into the site.
 
-| Depth | ~Strength | Latency |
-|---|---|---|
-| 8 | ~2200 | instant |
-| 12 | ~2800 | ~50 ms |
-| 18 | ~3200 | 2–5 s |
+The app checks `releases.js` after sign-in and shows a download link when a newer build exists (`updates.py`).
 
----
-
-## 🪟 Windows
-
-The bot's brain, capture (mss), recognition (OpenCV) and UI (PyQt6) are cross-platform. Everything
-OS-specific sits in `native.py` behind one set of functions, with a macOS and a Windows
-implementation:
+Platform differences sit behind one set of functions in `native.py`:
 
 | | macOS | Windows |
 |---|---|---|
-| overlay pinned / click-through / hidden from our own grabs | Cocoa window level, `setIgnoresMouseEvents:`, `NSWindowSharingNone` | `WS_EX_TRANSPARENT`+`WS_EX_TOPMOST`, `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` |
-| screen-recording permission | TCC prompt + relaunch | none needed |
-| remembered session | keychain (`security`) | Credential Manager (`keyring`) |
-| opponent-rating OCR | Apple Vision | Windows.Media.Ocr (`requirements-win-ocr.txt`, optional), else tesseract |
-| data dir | `~/Library/Application Support/Chess Vision` | `%LOCALAPPDATA%\Chess Vision` |
-| DPI | 1x capture | Qt high-DPI scaling off, so Qt and mss share one pixel grid |
+| Overlay pinned, click-through, hidden from capture | Cocoa window level, `setIgnoresMouseEvents:`, `NSWindowSharingNone` | `WS_EX_TRANSPARENT` + `WS_EX_TOPMOST`, `SetWindowDisplayAffinity` |
+| Screen-recording permission | TCC prompt on launch, relaunch after granting | none needed |
+| Remembered session | Keychain | Credential Manager |
+| Opponent-rating and clock OCR | Apple Vision | Windows.Media.Ocr (`requirements-win-ocr.txt`), else tesseract |
+| Data directory | `~/Library/Application Support/Chess Vision` | `%LOCALAPPDATA%\Chess Vision` |
 
-Build (PyInstaller does not cross-compile, so on Windows or in CI):
-
-    pip install -r requirements.txt pyinstaller
-    pip install -r requirements-win-ocr.txt          # optional
-    powershell -ExecutionPolicy Bypass -File packaging\build_win.ps1
-    # -> dist\ChessVision\ChessVision.exe and dist\ChessVision-<ver>-windows-x64.zip
-
-CI: `.github/workflows/windows-build.yml` builds on every push to `main` (artifact on the run) and
-publishes a GitHub Release for `v*` tags or a manual "Run workflow" with publish on. The build
-downloads Stockfish's official `sse41-popcnt` Windows binary (runs on any x86-64 from ~2010);
-set `CV_STOCKFISH_BUILD=avx2` for a faster one on modern CPUs.
-
-First run on a test machine: unzip, run `ChessVision.exe`, click through SmartScreen (unsigned).
-If nothing appears, read `%LOCALAPPDATA%\Chess Vision\chess-vision.log`. Things to check that
-this Mac could not: the overlay is click-through, arrows never show up in the debug board's
-captured frame, and the board is found on a display with 125%/150% scaling.
-
-## 🔐 Accounts (login, subscriptions, admin)
-
-The app opens with a sign-in window; the menu only appears for a licensed user or an admin.
-Accounts live in a Supabase project (free tier): email + password auth plus a `profiles` table
-(`role` user|friend|admin, `active`, `expires_at`) protected by row-level security, so the publishable key
-shipped in `config.py` can't read anyone else's row. Sessions are remembered in the macOS keychain.
-
-- New accounts are **inactive** until an admin enables them (admin panel button after sign-in:
-  toggle active, set expiry, +30d, change role). The website has the same panel at `admin.html`.
-- Roles: `user` needs an active subscription; `friend` has unlimited access with no admin powers
-  (shown in blue); `admin` has everything. Adding `friend` to an existing project: run
-  `supabase/friend_role.sql` in the Supabase SQL editor.
-- Game history: every finished live game is uploaded to `public.games` by `stats.py`; the website
-  dashboard shows played / won / drawn / lost, accuracy and a recent-games table. One-time setup:
-  `supabase/games.sql` in the SQL editor (re-run it on an older project to add the `termination` column).
-- Result detection: checkmate, stalemate and material draws come from the board itself.
-  Resignations, flags, agreed draws, repetitions and aborts are read off chess.com's game-over
-  dialog with OCR (`result_reader.py`): when the dialog hides the board centre the app OCRs the
-  board area once a second and ends the game after two identical reads. The reason
-  (`termination`) goes into the PGN header, the games table and the website. To check what the
-  reader sees on a real game-over screen: `python debug_result.py w` (or `b`).
-- Training dashboard on the website: `python export_training.py` snapshots `selfplay_runs/` into
-  `../chess-vision-site/training/` and regenerates `training.html` (admin-only tab). The tab goes
-  live automatically when `dashboard.py` is running locally.
-- Set `CHESS_VISION_SUPABASE_URL` (or edit `config.py`) to point at the project. The secret /
-  service-role key is never used by the app.
-- Schema + policies: see the SQL in the project notes (`profiles`, `is_admin()`, `handle_new_user` trigger).
+Writable state (templates, live game logs, `chess-vision.log`, `prefs.json`) lives in the data directory. The Windows build has only been exercised in CI so far, not on a real PC.
 
 ---
 
-## 🧪 Tuning harness & live dashboard
+## Accounts and billing
 
-Every strength change is judged by self-play, never by feel:
+The app and the website share one Supabase project: email and password auth plus a `profiles` table (`role` user | friend | admin, `active`, `expires_at`, Stripe ids) behind row-level security, so the publishable key shipped in `config.py` can't read anyone else's row. Licence rules are identical in `auth.py` and the site's `sb.js`:
+
+- **user** needs an active subscription
+- **friend** has unlimited access and no admin powers
+- **admin** has everything, including the accounts panel (in the app after sign-in and at `/admin` on the site)
+
+Billing is Stripe with no custom checkout. The site's Subscribe button is a Stripe Payment Link carrying the user's id; the dashboard's Manage subscription link is the Customer Portal. `supabase/functions/stripe-webhook` is a Supabase Edge Function that verifies Stripe's signature and flips `active` and `expires_at` on checkout, renewal, failed payment and cancellation, with a day of grace and an idempotency table. Its README has the full setup and testing checklist.
+
+SQL to run once in a fresh project, all in `supabase/`: `friend_role.sql`, `games.sql`, `stripe.sql`. Deploy the function with `supabase functions deploy stripe-webhook` after `supabase link`; `config.toml` already disables JWT verification for it.
+
+**Game history.** Every finished live game is uploaded to `public.games` by `stats.py`, and the website dashboard shows results, accuracy and a recent-games table. Checkmate, stalemate and material draws come from the board; resignations, flags, agreed draws and aborts are read off chess.com's game-over dialog by `result_reader.py`.
+
+---
+
+## Tuning
+
+Every strength change is judged by self-play against rating-capped Stockfish:
 
 ```bash
 ./venv/bin/python selfplay.py --games 10 --target-elo 1600 --opp-elo 1600 --label "what changed"
 ./venv/bin/python selfplay.py --games 10 --opp-elo 1320 --opp-prior 1600   # a "1600" that plays like 1320
 ./venv/bin/python selfplay.py --games 20 --session                          # with the cross-game governor
 ./venv/bin/python runstats.py -v                                            # compare runs
+./venv/bin/python dashboard.py                                              # live dashboard on :8765
 ```
 
-By default the bot learns the opponent the way it does live (printed-rating prior + observed loss);
-`--no-adapt` pins it, `--no-book` disables the repertoire. Each run writes PGNs to `selfplay_pgns/`
-and one JSON line per move/game to `selfplay_runs/`.
+Runs write PGNs to `selfplay_pgns/` and one JSON line per move to `selfplay_runs/`. The dashboard follows the newest run: live board, the decision line, rating and eval charts, loss histograms, per-game and per-iteration tables. `export_training.py` snapshots the runs into the website's admin-only Training tab.
 
-```bash
-./venv/bin/python dashboard.py     # then open http://localhost:8765
+What good looks like against an equal opponent: score of 9 out of 10 or better, best-move rate between 30 and 50 percent, contested ACPL between 22 and 40, zero suspicious sacrifices. Tuning is closed as of 1.1; the current constants ship.
+
+---
+
+## Project structure
+
+```
+chessbot/
+├── main.py                 # scan loop, state machine, turn tracking, app entry
+├── move_selector.py        # the human layer
+├── elo_estimator.py        # rating ⇄ ACPL curve, estimators
+├── openings.py             # human opening repertoire
+├── session.py              # cross-game governor
+├── think_time.py           # clock OCR + think timer
+├── engine.py               # Stockfish wrapper (MultiPV, mates, recovery)
+├── board_detector.py       # HSV mask → contour → board rect
+├── piece_recognizer.py     # template matching, king recovery, auto-calibration
+├── capture.py              # mss screen/region capture
+├── result_reader.py        # game-over dialog OCR
+├── opponent_rating.py      # OCR of the opponent's printed rating
+├── overlay.py              # overlay + debug board
+├── native.py               # macOS / Windows specifics behind one API
+├── menu.py                 # setup card
+├── board_setup.py          # board-theme reminder after sign-in
+├── account_ui.py, auth.py  # sign-in, licence gate, admin panel (Supabase)
+├── permissions.py          # Screen Recording flow (macOS)
+├── updates.py              # newer-build check against the website
+├── stats.py                # uploads finished games
+├── recorder.py             # live game logs (JSONL + PGN)
+├── ui_theme.py             # the app's visual system
+├── config.py, paths.py, version.py
+├── selfplay.py, runstats.py, dashboard.py, export_training.py   # tuning
+├── calibrate.py, debug_*.py                                     # dev tools
+├── packaging/              # build_app.sh, build_win.ps1, release.py, notarize.sh
+├── supabase/               # SQL migrations, stripe-webhook Edge Function
+└── .github/workflows/      # Windows build on tags
 ```
 
-The dashboard follows the newest run: live board with the eval bar, the decision line (effective /
-realized / opponent rating, temperature, cushion, criticality, think time), rating and eval charts for
-the current game, the loss-per-move histogram for the whole run (all moves vs contested positions),
-a per-game table, and an iteration table across runs. What "good" looks like: score ≥ 9/10 vs an
-equal opponent, best-move 30–50 %, contested ACPL 22–40, zero SUSPICIOUS sacrifices.
+---
+
+## Troubleshooting
+
+**No board found.** The board must be fully visible on some display, on chess.com's Green theme, with screen recording allowed. Each display is scanned in turn.
+
+**Pieces misread.** Show a starting position with nothing covering the board and the app re-cuts its templates. From source you can also run `calibrate.py`.
+
+**Packaged app quits or does nothing.** Read `chess-vision.log` in the data directory. On a Mac the usual cause is Screen Recording not granted, and macOS forgets the grant after an update: switch Chess Vision off and on in that list.
+
+**Wrong colour.** Auto-detect infers it on the first scan. Pick White or Black on the setup card if you switch sides mid-session.
 
 ---
 
-## 🔧 Troubleshooting
+## Roadmap
 
-**"No board found"** — board fully visible on any monitor (each display is scanned in turn), default green/beige theme, screen recording permitted.
-
-**Poor recognition** — show the starting position (new game) with nothing covering the board: the app re-cuts its templates when the position on screen is plainly the start but the templates disagree. From a checkout you can also re-run `python3 calibrate.py`.
-
-**Packaged app does nothing / quits** — read `~/Library/Application Support/Chess Vision/chess-vision.log`; the usual cause is Screen Recording permission not granted yet.
-
-**Wrong color** — color is inferred on first scan; restart between games if you switch.
-
----
-
-## 🔭 Roadmap — where the math goes next
-
-The v1 human layer is a hand-tuned generative model. The plan is to make each piece **learned or principled** rather than tuned:
-
-**📖 Opening book, properly.** Replace "engine + tight temperature" in the opening with a Polyglot book and popularity-weighted sampling, $P(m) \propto n_m^{1/\tau(E)}$, where $n_m$ is how often humans at rating $E$ actually play $m$. Lower ELO → hotter $\tau$ → more sidelines. Kills the last "why did it play a3" tells.
-
-**⏱ Thinking-time model** (`think_time.py`). The overlay's "wait Ns" badge is paced to the clock: the player's clock is read off chess.com with OCR at every turn (bottom player row), the time control is picked in the menu or inferred from the clock at move one (Read clock), and the remaining time is split over the moves still expected, minus a reserve. Each move's share is bent by the position — opening and obvious moves ×0.3, real decisions ×2.2, worse positions ×1.3, simple endgames ×0.6 — with log-normal jitter, and time trouble flattens everything towards premove speed. Simulated over 3,300 games (1+0 to 15+10, 40–70 moves) it never flags and typically leaves 5–20% of the clock.
-
-**📈 Bayesian opponent model.** The EMA on ACPL is a point estimate. Replace it with a posterior over $E_o$ — a normal-normal update per move with per-move variance from position complexity — so `conf` becomes real posterior width, and the edge $\varepsilon$ can be chosen against uncertainty rather than a fixed ramp.
-
-**🎯 Blunder hazard, not just temperature.** Real human error is bimodal: mostly small imprecision, occasionally one big miss. Model the big miss explicitly as a per-move hazard $h = \sigma\big(\beta_0 + \beta_1 (E_{\text{eff}} - E^\star) + \beta_2\,\text{complexity} + \beta_3\,\text{clock}\big)$ instead of stretching the softmax tail; fit $\beta$ from real games.
-
-**🧬 Learned prior.** Swap the hand-written $\pi(m)$ table for a Maia-style rating-conditioned policy — "what would a 1500 *actually* click here" — as the prior, keeping the softmax-over-regret as the safety envelope.
-
-**🎛 Calibration from real games.** Regress realized ACPL against target ACPL over logged games and fit the $T_{\text{base}}$ scale and $L_{\max}$ multiplier per rating band, replacing the self-play table above.
-
-**🎨 Style vectors.** Per-game sampled traits — aggression, simplification tendency, exchange appetite — added as extra terms in $\pi(m)$, so consecutive games don't share a fingerprint. Simplify against tacticians, press against passive players.
-
-**🖥 Windows / Linux overlays.**
+- **Any board theme.** Theme-independent board finding, so the reminder card can go.
+- **Bayesian opponent model.** A posterior over the opponent's rating instead of an EMA point estimate, so confidence is real posterior width.
+- **Blunder hazard.** Human error is bimodal: mostly small imprecision, occasionally one big miss. Model the big miss as an explicit per-move hazard fitted from real games, rather than stretching the softmax tail.
+- **Learned prior.** A rating-conditioned policy in the style of Maia as the prior, with softmax-over-regret kept as the safety envelope.
+- **Style vectors.** Per-game traits, aggression, simplification, exchange appetite, so consecutive games don't share a fingerprint.
+- **Windows on real hardware.** Overlay click-through, capture exclusion and 125/150% display scaling all still need a real PC.
 
 ---
 
-## 🧰 Tech Stack
+## Tech
 
-[mss](https://github.com/BoboTiG/python-mss) · [OpenCV](https://opencv.org/) · [python-chess](https://python-chess.readthedocs.io/) · [Stockfish](https://stockfishchess.org/) via [stockfish](https://pypi.org/project/stockfish/) · [PyQt6](https://www.riverbankcomputing.com/software/pyqt/)
+[mss](https://github.com/BoboTiG/python-mss) · [OpenCV](https://opencv.org/) · [python-chess](https://python-chess.readthedocs.io/) · [Stockfish](https://stockfishchess.org/) · [PyQt6](https://www.riverbankcomputing.com/software/pyqt/) · [Supabase](https://supabase.com/) · [Stripe](https://stripe.com/) · [Netlify](https://www.netlify.com/)
 
----
+## License
 
-## 📜 License
-
-Proprietary — all rights reserved. This is **not** an open source project. The source code is publicly visible for reading only: no copying, no reuse in other projects, no modification, no redistribution, and no commercial or competing use of any kind without written permission. See [LICENSE](LICENSE).
+Proprietary, all rights reserved. The source is public for reading only: no copying, reuse, modification, redistribution, or commercial use without written permission. See [LICENSE](LICENSE).
