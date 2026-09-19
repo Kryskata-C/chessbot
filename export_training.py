@@ -29,13 +29,13 @@ SRC = os.path.join(ROOT, "dashboard", "index.html")
 NAV = """<div style="position: relative; background: #0e0d0b; color: #efe9dd; min-height: 100vh;" id="page">
   <div class="grain"></div>
   <div class="wrap" style="display: flex; align-items: center; justify-content: space-between; height: 84px;">
-    <a href="index.html" style="display: inline-flex; align-items: center; gap: 12px; font-family: var(--serif); font-size: 24px; letter-spacing: -0.01em;"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="oklch(0.88 0.21 128)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></svg><span>Chess Vision</span></a>
+    <a href="/" style="display: inline-flex; align-items: center; gap: 12px; font-family: var(--serif); font-size: 24px; letter-spacing: -0.01em;"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="oklch(0.88 0.21 128)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"></path><circle cx="12" cy="12" r="3"></circle></svg><span>Chess Vision</span></a>
     <div class="nav-links" style="display: flex; gap: 34px; font-size: 15px; color: #9b9384;">
-      <a href="index.html#why">Why it feels human</a>
-      <a href="index.html#how">How it works</a>
-      <a href="index.html#pricing">Pricing</a>
+      <a href="/#why">Why it feels human</a>
+      <a href="/#how">How it works</a>
+      <a href="/#pricing">Pricing</a>
     </div>
-    <span id="nav-auth"><a href="account.html" class="chip"><span class="avatar">·</span><span class="chip-text">Signing in…</span></a></span>
+    <span id="nav-auth"><a href="/account" class="chip"><span class="avatar">·</span><span class="chip-text">Signing in…</span></a></span>
   </div>
 """
 
